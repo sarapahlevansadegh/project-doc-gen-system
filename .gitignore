@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+uv.lock
+
+# Secrets / environment
+.env
+
+# Generated outputs
+generated_docs/*
+backend/generated_docs/*
+output.docx
+openapi.json
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Editor / OS
+.vscode/
+.venv/
+.DS_Store
+
+# Test artifacts
+check_bcrypt.py
+check_users.py
+ensure_admin.py
