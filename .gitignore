@@ -1,35 +1,153 @@
-# Python-generated files
+# =========================
+# Python
+# =========================
+
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+
+# Build files
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 
 # Virtual environments
-.venv
-uv.lock
+.venv/
+venv/
+env/
 
-# Secrets / environment
+# Package managers
+# Keep uv.lock committed for reproducible builds
+# uv.lock
+
+
+# =========================
+# Environment & Secrets
+# =========================
+
 .env
+.env.*
+!.env.example
 
-# Generated outputs
-generated_docs/*
-backend/generated_docs/*
+*.key
+*.pem
+secrets/
+credentials/
+
+
+# =========================
+# Generated Documents
+# =========================
+
+generated_docs/
+backend/generated_docs/
+
 output.docx
 openapi.json
 
-# Tooling caches
-.mypy_cache/
-.ruff_cache/
+uploads/
+private_docs/
+
+# Generated user files
+*.pdf
+*.xlsx
+
+
+# =========================
+# AI Models / Embeddings
+# =========================
+
+models/
+model_cache/
+.cache/
+
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+
+# =========================
+# Databases
+# =========================
+
+*.db
+*.sqlite
+*.sqlite3
+
+
+# =========================
+# Logs
+# =========================
+
+*.log
+logs/
+
+
+# =========================
+# Testing
+# =========================
+
 .pytest_cache/
+.coverage
+htmlcov/
 
-# Editor / OS
-.vscode/
-.venv/
-.DS_Store
-
-# Test artifacts
+# Local test scripts
 check_bcrypt.py
 check_users.py
 ensure_admin.py
+
+
+# =========================
+# Type checking / Formatting
+# =========================
+
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+
+# =========================
+# Frontend (React/Vite)
+# =========================
+
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+
+# =========================
+# Docker
+# =========================
+
+*.pid
+
+
+# =========================
+# Editor / OS
+# =========================
+
+.vscode/
+.idea/
+
+.DS_Store
+Thumbs.db
+
+
+# =========================
+# Temporary files
+# =========================
+
+*.tmp
+*.temp
+*.swp
+*.bak
+
+
+# =========================
+# Documentation / Private References
+# =========================
+
+# Uncomment if reference documents are private
+# reference_templates/*.docx
