@@ -28,6 +28,7 @@ def _fake_llm(prompt: str, max_tokens: int, temperature: float) -> str:
 
 class _FakeDevice:
     def __init__(self):
+        
         self.name = "VL8"
         self.model = "VL8"
         self.document_code = "15799"
@@ -225,6 +226,7 @@ def test_job_status_transitions_with_mocked_llm():
     from services import generation_service
 
     class _FakeJob:
+        id = uuid.uuid4()
         status = "pending"
         progress_pct = 0
         current_section = None
@@ -261,6 +263,7 @@ def test_failure_handling_sets_failed_status():
     from services import generation_service
 
     class _FakeJob:
+        id = uuid.uuid4()
         status = "pending"
         progress_pct = 0
         current_section = None

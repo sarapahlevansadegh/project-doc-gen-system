@@ -1,20 +1,26 @@
 services:
   db:
     image: ankane/pgvector:latest
+
     environment:
       POSTGRES_DB: docgen
       POSTGRES_USER: docgen
       POSTGRES_PASSWORD: ${DB_PASSWORD:-docgen_pass_123}
+
     ports:
       - "5433:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U docgen"]
       interval: 5s
       timeout: 5s
       retries: 5
+
     restart: unless-stopped
+
     networks:
       - docgen
 
@@ -30,38 +36,29 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://docgen:docgen_pass_123@db:5432/docgen}
       - DB_PASSWORD=${DB_PASSWORD:-docgen_pass_123}
 
-
       # LLM Provider Selection
       - DOCGEN_LLM_PROVIDER=${DOCGEN_LLM_PROVIDER:-gemini}
 
-
       # Gemini
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - DOCGEN_LLM_MODEL=${DOCGEN_LLM_MODEL:-gemini-2.5-flash}
-
+      - DOCGEN_LLM_MODEL=${DOCGEN_LLM_MODEL:-gemini-3.6-flash}
 
       # Other Providers
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
 
-
       - DOCGEN_ANTHROPIC_MODEL=${DOCGEN_ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
-
       - DOCGEN_GROQ_MODEL=${DOCGEN_GROQ_MODEL:-llama-3.3-70b-versatile}
-
       - DOCGEN_OPENAI_MODEL=${DOCGEN_OPENAI_MODEL:-gpt-4o-mini}
-
 
       # Ollama Local Models
       - DOCGEN_OLLAMA_MODEL=${DOCGEN_OLLAMA_MODEL:-qwen3:4b}
       - DOCGEN_OLLAMA_URL=${DOCGEN_OLLAMA_URL:-http://host.docker.internal:11434}
 
-
       # RAG
       - EMBED_MODEL=${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       - EMBED_DIMENSION=${EMBED_DIMENSION:-384}
-
 
       # Security
       - SECRET_KEY=${SECRET_KEY:-}
@@ -69,24 +66,34 @@ services:
       - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
       - REFRESH_TOKEN_EXPIRE_DAYS=${REFRESH_TOKEN_EXPIRE_DAYS:-7}
 
-
       # Generated Files
       - GENERATED_DOCS_PATH=/app/generated_docs
 
+      # Device Documents
+      - DEVICE_DOCUMENTS_PATH=/app/device_documents
 
     ports:
       - "8000:8000"
 
-
     volumes:
+      # Backend source code
+      - ./backend:/app/backend
+
+      # Generated files
       - ./generated_docs:/app/generated_docs
+
+      # Reference templates
       - ./reference_templates:/app/reference_templates
 
+      # Device DOCX documents
+      - ./device_documents:/app/device_documents
+
+      # HuggingFace model cache
+      - huggingface_cache:/root/.cache/huggingface
 
     depends_on:
       db:
         condition: service_healthy
-
 
     healthcheck:
       test:
@@ -96,14 +103,13 @@ services:
           "-c",
           "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"
         ]
+
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-
     restart: unless-stopped
-
 
     deploy:
       resources:
@@ -112,15 +118,12 @@ services:
         reservations:
           memory: 512M
 
-
     networks:
       - docgen
-
 
     command: >
       sh -c "alembic upgrade head &&
       python -m uvicorn app:app --host 0.0.0.0 --port 8000"
-
 
 
   frontend:
@@ -141,9 +144,9 @@ services:
       - docgen
 
 
-
 volumes:
   postgres_data:
+  huggingface_cache:
 
 
 networks:

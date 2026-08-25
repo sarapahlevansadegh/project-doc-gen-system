@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { devicesApi } from "@/services/api";
 import type {
@@ -24,60 +24,118 @@ const emptyCreate: DeviceCreate = {
 
 export default function Devices() {
   const queryClient = useQueryClient();
+
+  // Create / Edit
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<DeviceCreate | DeviceUpdate>(emptyCreate);
+  const [form, setForm] =
+    useState<DeviceCreate | DeviceUpdate>(emptyCreate);
+
+  // Delete
   const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // Pagination / Search
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const limit = 20;
 
+  // Upload
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Load devices
   const {
     data: deviceResponse,
     isLoading,
     error,
   } = useQuery({
     queryKey: ["devices", page, search],
-    queryFn: () => devicesApi.list({ skip: page * limit, limit, search: search || undefined }),
+    queryFn: () =>
+      devicesApi.list({
+        skip: page * limit,
+        limit,
+        search: search || undefined,
+      }),
   });
 
   const devices = deviceResponse?.items ?? [];
   const total = deviceResponse?.total ?? 0;
   const totalPages = Math.ceil(total / limit);
 
+  // Create device
   const createMutation = useMutation({
     mutationFn: devicesApi.create,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["devices"], exact: false });
+      queryClient.invalidateQueries({
+        queryKey: ["devices"],
+        exact: false,
+      });
       closeModal();
     },
   });
 
+  // Update device
   const updateMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: DeviceUpdate }) =>
-      devicesApi.update(id, payload),
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id: string;
+      payload: DeviceUpdate;
+    }) => devicesApi.update(id, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["devices"], exact: false });
+      queryClient.invalidateQueries({
+        queryKey: ["devices"],
+        exact: false,
+      });
       closeModal();
     },
   });
 
+  // Delete device
   const deleteMutation = useMutation({
     mutationFn: devicesApi.remove,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["devices"], exact: false });
+      queryClient.invalidateQueries({
+        queryKey: ["devices"],
+        exact: false,
+      });
       setDeleteId(null);
     },
   });
 
+  // Upload device document
+  const uploadMutation = useMutation({
+    mutationFn: (file: File) => devicesApi.uploadDocument(file),
+
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["devices"],
+        exact: false,
+      });
+
+      closeUploadModal();
+    },
+  });
+
+  // Create / Edit modal
   const openCreate = () => {
     setEditingId(null);
-    setForm({ ...emptyCreate, specs: [], alarms: [], commands: [] });
+
+    setForm({
+      ...emptyCreate,
+      specs: [],
+      alarms: [],
+      commands: [],
+    });
+
     setIsModalOpen(true);
   };
 
   const openEdit = (device: Device) => {
     setEditingId(device.id);
+
     setForm({
       name: device.name,
       model: device.model || "",
@@ -85,12 +143,14 @@ export default function Devices() {
       safety_class: device.safety_class,
       driver_version: device.driver_version || "",
       gui_version: device.gui_version || "",
+
       specs: device.specs.map((s) => ({
         category: s.category,
         spec_key: s.spec_key,
         spec_value: s.spec_value,
         spec_unit: s.spec_unit || "",
       })),
+
       alarms: device.alarms.map((a) => ({
         priority: a.priority || "",
         condition: a.condition,
@@ -100,6 +160,7 @@ export default function Devices() {
         required_action: a.required_action || "",
         alarm_order: a.alarm_order,
       })),
+
       commands: device.commands.map((c) => ({
         direction: c.direction || "",
         command_name: c.command_name,
@@ -109,228 +170,481 @@ export default function Devices() {
         command_order: c.command_order,
       })),
     });
+
     setIsModalOpen(true);
   };
 
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingId(null);
-    setForm({ ...emptyCreate, specs: [], alarms: [], commands: [] });
+
+    setForm({
+      ...emptyCreate,
+      specs: [],
+      alarms: [],
+      commands: [],
+    });
   };
 
+  // Upload modal
+  const openUploadModal = () => {
+    setUploadFile(null);
+    uploadMutation.reset();
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    setIsUploadModalOpen(true);
+  };
+
+  const closeUploadModal = () => {
+    if (uploadMutation.isPending) return;
+
+    setIsUploadModalOpen(false);
+    setUploadFile(null);
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    uploadMutation.reset();
+  };
+
+  const handleFileChange = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0] ?? null;
+
+    if (!file) {
+      setUploadFile(null);
+      return;
+    }
+
+    const isDocx =
+      file.name.toLowerCase().endsWith(".docx") ||
+      file.type ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    if (!isDocx) {
+      alert("Please select a .docx file.");
+      event.target.value = "";
+      setUploadFile(null);
+      return;
+    }
+
+    setUploadFile(file);
+  };
+
+  const handleUploadSubmit = () => {
+    if (!uploadFile) return;
+
+    uploadMutation.mutate(uploadFile);
+  };
+
+  // Device form
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
     if (editingId) {
-      updateMutation.mutate({ id: editingId, payload: form as DeviceUpdate });
+      updateMutation.mutate({
+        id: editingId,
+        payload: form as DeviceUpdate,
+      });
     } else {
       createMutation.mutate(form as DeviceCreate);
     }
   };
 
-  const updateField = (field: string, value: string | boolean | number | undefined) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
+  const updateField = (
+    field: string,
+    value: string | boolean | number | undefined
+  ) => {
+    setForm((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
   };
 
-  const updateArrayItem = <T extends DeviceSpec | DeviceAlarm | SerialCommand>(
+  const updateArrayItem = <
+    T extends DeviceSpec | DeviceAlarm | SerialCommand
+  >(
     field: "specs" | "alarms" | "commands",
     index: number,
-    item: T,
+    item: T
   ) => {
     setForm((prev) => {
       const arr = [...(prev[field] as T[])];
       arr[index] = item;
-      return { ...prev, [field]: arr };
+
+      return {
+        ...prev,
+        [field]: arr,
+      };
     });
   };
 
-  const addArrayItem = (field: "specs" | "alarms" | "commands") => {
+  const addArrayItem = (
+    field: "specs" | "alarms" | "commands"
+  ) => {
     let empty: DeviceSpec | DeviceAlarm | SerialCommand;
-    if (field === "specs") empty = { category: "", spec_key: "", spec_value: "", spec_unit: "" };
-    else if (field === "alarms") empty = { condition: "", indicator_sound: false };
-    else empty = { command_name: "" };
+
+    if (field === "specs") {
+      empty = {
+        category: "",
+        spec_key: "",
+        spec_value: "",
+        spec_unit: "",
+      };
+    } else if (field === "alarms") {
+      empty = {
+        condition: "",
+        indicator_sound: false,
+      };
+    } else {
+      empty = {
+        command_name: "",
+      };
+    }
 
     setForm((prev) => ({
       ...prev,
-      [field]: [...(prev[field] as unknown[]), empty],
+      [field]: [
+        ...(prev[field] as unknown[]),
+        empty,
+      ],
     }));
   };
 
-  const removeArrayItem = (field: "specs" | "alarms" | "commands", index: number) => {
+  const removeArrayItem = (
+    field: "specs" | "alarms" | "commands",
+    index: number
+  ) => {
     setForm((prev) => ({
       ...prev,
-      [field]: (prev[field] as unknown[]).filter((_, i) => i !== index),
+      [field]: (prev[field] as unknown[]).filter(
+        (_, i) => i !== index
+      ),
     }));
   };
 
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending =
+    createMutation.isPending ||
+    updateMutation.isPending;
 
   return (
     <div className="space-y-6">
+
+      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Devices</h1>
-          <p className="mt-1 text-sm text-gray-500">Manage devices and their specifications.</p>
+          <h1 className="text-2xl font-bold text-gray-900">
+            Devices
+          </h1>
+
+          <p className="mt-1 text-sm text-gray-500">
+            Manage devices and their specifications.
+          </p>
         </div>
-        <button
-          onClick={openCreate}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          Create Device
-        </button>
+
+        {/* فقط Upload و Create در بالای صفحه */}
+        <div className="flex items-center gap-3">
+
+          <button
+            type="button"
+            onClick={openUploadModal}
+            className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Upload
+          </button>
+
+          <button
+            type="button"
+            onClick={openCreate}
+            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            Create Device
+          </button>
+
+        </div>
       </div>
 
       {error && (
-        <div className="rounded-md bg-red-50 p-4 text-sm text-red-800">Failed to load devices.</div>
+        <div className="rounded-md bg-red-50 p-4 text-sm text-red-800">
+          Failed to load devices.
+        </div>
       )}
 
+      {/* Search */}
       <div className="flex items-center gap-4">
         <input
           type="text"
           value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(0);
+          }}
           placeholder="Search devices..."
           className="block w-full max-w-sm rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
         />
       </div>
 
+      {/* Devices table */}
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
         <table className="min-w-full divide-y divide-gray-200">
+
           <thead className="bg-gray-50">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Name
               </th>
+
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Model
               </th>
+
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Safety
               </th>
+
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Driver / GUI
               </th>
+
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Created
               </th>
+
               <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
                 Actions
               </th>
             </tr>
           </thead>
+
           <tbody className="divide-y divide-gray-100">
+
             {isLoading && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500">
+                <td
+                  colSpan={6}
+                  className="px-4 py-6 text-center text-sm text-gray-500"
+                >
                   Loading devices...
                 </td>
               </tr>
             )}
+
             {!isLoading && devices.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500">
+                <td
+                  colSpan={6}
+                  className="px-4 py-6 text-center text-sm text-gray-500"
+                >
                   No devices found. Create one to get started.
                 </td>
               </tr>
             )}
+
             {devices.map((device) => (
-              <tr key={device.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 text-sm font-medium text-gray-900">{device.name}</td>
-                <td className="px-4 py-3 text-sm text-gray-600">{device.model || "-"}</td>
-                <td className="px-4 py-3 text-sm text-gray-600">{device.safety_class}</td>
-                <td className="px-4 py-3 text-sm text-gray-600">
-                  {device.driver_version || "-"} / {device.gui_version || "-"}
+              <tr
+                key={device.id}
+                className="hover:bg-gray-50"
+              >
+                <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                  {device.name}
                 </td>
+
                 <td className="px-4 py-3 text-sm text-gray-600">
-                  {device.created_at ? new Date(device.created_at).toLocaleDateString() : "-"}
+                  {device.model || "-"}
                 </td>
+
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  {device.safety_class}
+                </td>
+
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  {device.driver_version || "-"} /{" "}
+                  {device.gui_version || "-"}
+                </td>
+
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  {device.created_at
+                    ? new Date(
+                        device.created_at
+                      ).toLocaleDateString()
+                    : "-"}
+                </td>
+
+                {/* فقط Edit / Delete */}
                 <td className="px-4 py-3 text-right text-sm">
+
                   <button
+                    type="button"
                     onClick={() => openEdit(device)}
                     className="mr-3 text-blue-600 hover:text-blue-800"
                   >
                     Edit
                   </button>
+
                   <button
-                    onClick={() => setDeleteId(device.id)}
+                    type="button"
+                    onClick={() =>
+                      setDeleteId(device.id)
+                    }
                     className="text-red-600 hover:text-red-800"
                   >
                     Delete
                   </button>
+
                 </td>
               </tr>
             ))}
+
           </tbody>
         </table>
       </div>
 
+      {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
+
           <p className="text-sm text-gray-600">
-            Showing {page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total} devices
+            Showing {page * limit + 1}–
+            {Math.min(
+              (page + 1) * limit,
+              total
+            )}{" "}
+            of {total} devices
           </p>
+
           <div className="flex gap-2">
+
             <button
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              type="button"
+              onClick={() =>
+                setPage((p) => Math.max(0, p - 1))
+              }
               disabled={page === 0}
               className="rounded-md border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
             >
               Previous
             </button>
+
             <button
-              onClick={() => setPage((p) => p + 1)}
+              type="button"
+              onClick={() =>
+                setPage((p) => p + 1)
+              }
               disabled={page >= totalPages - 1}
               className="rounded-md border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
             >
               Next
             </button>
+
           </div>
         </div>
       )}
 
-      {/* Create / Edit Modal */}
+      {/* Create / Edit modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-6 shadow-xl">
+
             <div className="mb-4 flex items-center justify-between">
+
               <h2 className="text-lg font-semibold text-gray-900">
-                {editingId ? "Edit Device" : "Create Device"}
+                {editingId
+                  ? "Edit Device"
+                  : "Create Device"}
               </h2>
-              <button onClick={closeModal} className="text-gray-400 hover:text-gray-600">
+
+              <button
+                type="button"
+                onClick={closeModal}
+                className="text-gray-400 hover:text-gray-600"
+              >
                 Close
               </button>
+
             </div>
-            <form onSubmit={handleSubmit} className="space-y-4">
+
+            <form
+              onSubmit={handleSubmit}
+              className="space-y-4"
+            >
+
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Name</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Name
+                  </label>
+
                   <input
                     required
                     value={form.name}
-                    onChange={(e) => updateField("name", e.target.value)}
+                    onChange={(e) =>
+                      updateField(
+                        "name",
+                        e.target.value
+                      )
+                    }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Model</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Model
+                  </label>
+
                   <input
                     value={form.model as string}
-                    onChange={(e) => updateField("model", e.target.value)}
+                    onChange={(e) =>
+                      updateField(
+                        "model",
+                        e.target.value
+                      )
+                    }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Document Code</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Document Code
+                  </label>
+
                   <input
-                    value={form.document_code as string}
-                    onChange={(e) => updateField("document_code", e.target.value)}
+                    value={
+                      form.document_code as string
+                    }
+                    onChange={(e) =>
+                      updateField(
+                        "document_code",
+                        e.target.value
+                      )
+                    }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Safety Class</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Safety Class
+                  </label>
+
                   <select
-                    value={form.safety_class as string}
-                    onChange={(e) => updateField("safety_class", e.target.value)}
+                    value={
+                      form.safety_class as string
+                    }
+                    onChange={(e) =>
+                      updateField(
+                        "safety_class",
+                        e.target.value
+                      )
+                    }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   >
                     <option value="A">A</option>
@@ -338,232 +652,461 @@ export default function Devices() {
                     <option value="C">C</option>
                   </select>
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Driver Version</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Driver Version
+                  </label>
+
                   <input
-                    value={form.driver_version as string}
-                    onChange={(e) => updateField("driver_version", e.target.value)}
+                    value={
+                      form.driver_version as string
+                    }
+                    onChange={(e) =>
+                      updateField(
+                        "driver_version",
+                        e.target.value
+                      )
+                    }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">GUI Version</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    GUI Version
+                  </label>
+
                   <input
-                    value={form.gui_version as string}
-                    onChange={(e) => updateField("gui_version", e.target.value)}
+                    value={
+                      form.gui_version as string
+                    }
+                    onChange={(e) =>
+                      updateField(
+                        "gui_version",
+                        e.target.value
+                      )
+                    }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
               </div>
 
               {/* Specs */}
               <div>
+
                 <div className="flex items-center justify-between">
-                  <label className="block text-sm font-medium text-gray-700">Specs</label>
+
+                  <label className="block text-sm font-medium text-gray-700">
+                    Specs
+                  </label>
+
                   <button
                     type="button"
-                    onClick={() => addArrayItem("specs")}
+                    onClick={() =>
+                      addArrayItem("specs")
+                    }
                     className="text-xs text-blue-600 hover:text-blue-800"
                   >
                     Add Spec
                   </button>
+
                 </div>
+
                 <div className="mt-2 space-y-2">
-                  {(form.specs as DeviceSpec[]).map((spec, idx) => (
-                    <div key={idx} className="grid grid-cols-1 gap-2 md:grid-cols-5">
-                      <input
-                        placeholder="Category"
-                        value={spec.category}
-                        onChange={(e) =>
-                          updateArrayItem("specs", idx, { ...spec, category: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Key"
-                        value={spec.spec_key}
-                        onChange={(e) =>
-                          updateArrayItem("specs", idx, { ...spec, spec_key: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Value"
-                        value={spec.spec_value}
-                        onChange={(e) =>
-                          updateArrayItem("specs", idx, { ...spec, spec_value: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Unit"
-                        value={spec.spec_unit || ""}
-                        onChange={(e) =>
-                          updateArrayItem("specs", idx, { ...spec, spec_unit: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeArrayItem("specs", idx)}
-                        className="text-xs text-red-600"
+
+                  {(form.specs as DeviceSpec[]).map(
+                    (spec, idx) => (
+                      <div
+                        key={idx}
+                        className="grid grid-cols-1 gap-2 md:grid-cols-5"
                       >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+
+                        <input
+                          placeholder="Category"
+                          value={spec.category}
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "specs",
+                              idx,
+                              {
+                                ...spec,
+                                category:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Key"
+                          value={spec.spec_key}
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "specs",
+                              idx,
+                              {
+                                ...spec,
+                                spec_key:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Value"
+                          value={spec.spec_value}
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "specs",
+                              idx,
+                              {
+                                ...spec,
+                                spec_value:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Unit"
+                          value={
+                            spec.spec_unit || ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "specs",
+                              idx,
+                              {
+                                ...spec,
+                                spec_unit:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeArrayItem(
+                              "specs",
+                              idx
+                            )
+                          }
+                          className="text-xs text-red-600"
+                        >
+                          Remove
+                        </button>
+
+                      </div>
+                    )
+                  )}
+
                 </div>
               </div>
 
               {/* Alarms */}
               <div>
+
                 <div className="flex items-center justify-between">
-                  <label className="block text-sm font-medium text-gray-700">Alarms</label>
+
+                  <label className="block text-sm font-medium text-gray-700">
+                    Alarms
+                  </label>
+
                   <button
                     type="button"
-                    onClick={() => addArrayItem("alarms")}
+                    onClick={() =>
+                      addArrayItem("alarms")
+                    }
                     className="text-xs text-blue-600 hover:text-blue-800"
                   >
                     Add Alarm
                   </button>
+
                 </div>
+
                 <div className="mt-2 space-y-2">
-                  {(form.alarms as DeviceAlarm[]).map((alarm, idx) => (
-                    <div key={idx} className="grid grid-cols-1 gap-2 md:grid-cols-6">
-                      <input
-                        placeholder="Priority"
-                        value={alarm.priority || ""}
-                        onChange={(e) =>
-                          updateArrayItem("alarms", idx, { ...alarm, priority: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Condition"
-                        value={alarm.condition}
-                        onChange={(e) =>
-                          updateArrayItem("alarms", idx, { ...alarm, condition: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Text Shown"
-                        value={alarm.text_shown || ""}
-                        onChange={(e) =>
-                          updateArrayItem("alarms", idx, { ...alarm, text_shown: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Indicator Light"
-                        value={alarm.indicator_light || ""}
-                        onChange={(e) =>
-                          updateArrayItem("alarms", idx, {
-                            ...alarm,
-                            indicator_light: e.target.value,
-                          })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <label className="flex items-center gap-1 text-xs text-gray-600">
-                        <input
-                          type="checkbox"
-                          checked={alarm.indicator_sound}
-                          onChange={(e) =>
-                            updateArrayItem("alarms", idx, {
-                              ...alarm,
-                              indicator_sound: e.target.checked,
-                            })
-                          }
-                        />
-                        Sound
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => removeArrayItem("alarms", idx)}
-                        className="text-xs text-red-600"
+
+                  {(form.alarms as DeviceAlarm[]).map(
+                    (alarm, idx) => (
+                      <div
+                        key={idx}
+                        className="grid grid-cols-1 gap-2 md:grid-cols-6"
                       >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+
+                        <input
+                          placeholder="Priority"
+                          value={
+                            alarm.priority || ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "alarms",
+                              idx,
+                              {
+                                ...alarm,
+                                priority:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Condition"
+                          value={alarm.condition}
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "alarms",
+                              idx,
+                              {
+                                ...alarm,
+                                condition:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Text Shown"
+                          value={
+                            alarm.text_shown || ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "alarms",
+                              idx,
+                              {
+                                ...alarm,
+                                text_shown:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Indicator Light"
+                          value={
+                            alarm.indicator_light ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "alarms",
+                              idx,
+                              {
+                                ...alarm,
+                                indicator_light:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <label className="flex items-center gap-1 text-xs text-gray-600">
+                          <input
+                            type="checkbox"
+                            checked={
+                              alarm.indicator_sound
+                            }
+                            onChange={(e) =>
+                              updateArrayItem(
+                                "alarms",
+                                idx,
+                                {
+                                  ...alarm,
+                                  indicator_sound:
+                                    e.target.checked,
+                                }
+                              )
+                            }
+                          />
+                          Sound
+                        </label>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeArrayItem(
+                              "alarms",
+                              idx
+                            )
+                          }
+                          className="text-xs text-red-600"
+                        >
+                          Remove
+                        </button>
+
+                      </div>
+                    )
+                  )}
+
                 </div>
               </div>
 
               {/* Commands */}
               <div>
+
                 <div className="flex items-center justify-between">
-                  <label className="block text-sm font-medium text-gray-700">Commands</label>
+
+                  <label className="block text-sm font-medium text-gray-700">
+                    Commands
+                  </label>
+
                   <button
                     type="button"
-                    onClick={() => addArrayItem("commands")}
+                    onClick={() =>
+                      addArrayItem("commands")
+                    }
                     className="text-xs text-blue-600 hover:text-blue-800"
                   >
                     Add Command
                   </button>
+
                 </div>
+
                 <div className="mt-2 space-y-2">
-                  {(form.commands as SerialCommand[]).map((cmd, idx) => (
-                    <div key={idx} className="grid grid-cols-1 gap-2 md:grid-cols-6">
-                      <input
-                        placeholder="Direction"
-                        value={cmd.direction || ""}
-                        onChange={(e) =>
-                          updateArrayItem("commands", idx, { ...cmd, direction: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Command Name"
-                        value={cmd.command_name}
-                        onChange={(e) =>
-                          updateArrayItem("commands", idx, { ...cmd, command_name: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Description"
-                        value={cmd.description || ""}
-                        onChange={(e) =>
-                          updateArrayItem("commands", idx, { ...cmd, description: e.target.value })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Laser A"
-                        value={cmd.laser_a_mapping || ""}
-                        onChange={(e) =>
-                          updateArrayItem("commands", idx, {
-                            ...cmd,
-                            laser_a_mapping: e.target.value,
-                          })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        placeholder="Laser B"
-                        value={cmd.laser_b_mapping || ""}
-                        onChange={(e) =>
-                          updateArrayItem("commands", idx, {
-                            ...cmd,
-                            laser_b_mapping: e.target.value,
-                          })
-                        }
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeArrayItem("commands", idx)}
-                        className="text-xs text-red-600"
+
+                  {(form.commands as SerialCommand[]).map(
+                    (cmd, idx) => (
+                      <div
+                        key={idx}
+                        className="grid grid-cols-1 gap-2 md:grid-cols-6"
                       >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+
+                        <input
+                          placeholder="Direction"
+                          value={
+                            cmd.direction || ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "commands",
+                              idx,
+                              {
+                                ...cmd,
+                                direction:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Command Name"
+                          value={cmd.command_name}
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "commands",
+                              idx,
+                              {
+                                ...cmd,
+                                command_name:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Description"
+                          value={
+                            cmd.description || ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "commands",
+                              idx,
+                              {
+                                ...cmd,
+                                description:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Laser A"
+                          value={
+                            cmd.laser_a_mapping ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "commands",
+                              idx,
+                              {
+                                ...cmd,
+                                laser_a_mapping:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <input
+                          placeholder="Laser B"
+                          value={
+                            cmd.laser_b_mapping ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            updateArrayItem(
+                              "commands",
+                              idx,
+                              {
+                                ...cmd,
+                                laser_b_mapping:
+                                  e.target.value,
+                              }
+                            )
+                          }
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeArrayItem(
+                              "commands",
+                              idx
+                            )
+                          }
+                          className="text-xs text-red-600"
+                        >
+                          Remove
+                        </button>
+
+                      </div>
+                    )
+                  )}
+
                 </div>
               </div>
 
+              {/* Actions */}
               <div className="flex justify-end gap-2 pt-2">
+
                 <button
                   type="button"
                   onClick={closeModal}
@@ -571,45 +1114,191 @@ export default function Devices() {
                 >
                   Cancel
                 </button>
+
                 <button
                   type="submit"
                   disabled={isPending}
                   className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {editingId ? "Update" : "Create"}
+                  {editingId
+                    ? "Update"
+                    : "Create"}
                 </button>
+
               </div>
+
             </form>
           </div>
         </div>
       )}
 
-      {/* Delete Confirmation */}
+      {/* Upload modal */}
+      {isUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+
+            <div className="mb-4 flex items-center justify-between">
+
+              <h2 className="text-lg font-semibold text-gray-900">
+                Upload Device
+              </h2>
+
+              <button
+                type="button"
+                onClick={closeUploadModal}
+                disabled={uploadMutation.isPending}
+                className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+              >
+                Close
+              </button>
+
+            </div>
+
+            <div className="space-y-5">
+
+              {/* فقط Choose File */}
+              <div>
+
+                <label className="block text-sm font-medium text-gray-700">
+                  Device DOCX
+                </label>
+
+                <div className="mt-2 flex items-center gap-3">
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      fileInputRef.current?.click()
+                    }
+                    disabled={
+                      uploadMutation.isPending
+                    }
+                    className="rounded-md bg-blue-50 px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-100 disabled:opacity-50"
+                  >
+                    Choose File
+                  </button>
+
+                  <span className="max-w-[220px] truncate text-sm text-gray-500">
+                    {uploadFile
+                      ? uploadFile.name
+                      : "No file chosen"}
+                  </span>
+
+                </div>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".docx"
+                  onChange={handleFileChange}
+                  disabled={
+                    uploadMutation.isPending
+                  }
+                  className="hidden"
+                />
+
+              </div>
+
+              {uploadMutation.isPending && (
+                <p className="text-sm text-gray-500">
+                  Uploading and processing...
+                </p>
+              )}
+
+              {uploadMutation.isError && (
+                <p className="text-sm text-red-600">
+                  {uploadMutation.error instanceof Error
+                    ? uploadMutation.error.message
+                    : "Upload failed. Please try again."}
+                </p>
+              )}
+
+              {uploadMutation.isSuccess && (
+                <p className="text-sm text-green-600">
+                  Upload successful!
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+
+                <button
+                  type="button"
+                  onClick={closeUploadModal}
+                  disabled={
+                    uploadMutation.isPending
+                  }
+                  className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleUploadSubmit}
+                  disabled={
+                    !uploadFile ||
+                    uploadMutation.isPending
+                  }
+                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {uploadMutation.isPending
+                    ? "Uploading..."
+                    : "Upload"}
+                </button>
+
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-            <h3 className="text-lg font-semibold text-gray-900">Delete Device</h3>
+
+            <h3 className="text-lg font-semibold text-gray-900">
+              Delete Device
+            </h3>
+
             <p className="mt-2 text-sm text-gray-600">
-              Are you sure you want to delete this device? This action cannot be undone.
+              Are you sure you want to delete this
+              device? This action cannot be undone.
             </p>
+
             <div className="mt-4 flex justify-end gap-2">
+
               <button
+                type="button"
                 onClick={() => setDeleteId(null)}
                 className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Cancel
               </button>
+
               <button
-                onClick={() => deleteMutation.mutate(deleteId)}
-                disabled={deleteMutation.isPending}
+                type="button"
+                onClick={() =>
+                  deleteMutation.mutate(deleteId)
+                }
+                disabled={
+                  deleteMutation.isPending
+                }
                 className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               >
-                Delete
+                {deleteMutation.isPending
+                  ? "Deleting..."
+                  : "Delete"}
               </button>
+
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }
