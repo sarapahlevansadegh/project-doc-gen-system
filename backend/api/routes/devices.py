@@ -120,6 +120,104 @@ async def delete_device(
 # ============================================================
 
 
+@devices_router.post("/documents")
+async def upload_device_docx(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """
+    Upload a DOCX document and automatically create a new device.
+
+    The device is created with the filename (without extension) as the name.
+    The DOCX file is then associated with this newly created device.
+
+    This endpoint provides a simplified UX where users don't need to
+    select a device manually.
+    """
+
+    # --------------------------------------------------------
+    # Validate filename
+    # --------------------------------------------------------
+
+    filename = file.filename or ""
+
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only DOCX files are allowed",
+        )
+
+    # Extract device name from filename (remove .docx extension)
+    device_name = filename[:-5]  # Remove ".docx"
+
+    if not device_name or len(device_name.strip()) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename: device name cannot be empty",
+        )
+
+    # --------------------------------------------------------
+    # Create new device
+    # --------------------------------------------------------
+
+    device_payload = DeviceCreate(
+        name=device_name.strip(),
+        model="",
+        document_code="",
+        safety_class="B",
+        driver_version="",
+        gui_version="",
+        specs=[],
+        alarms=[],
+        commands=[],
+    )
+
+    device = await device_service.create_device(db, device_payload)
+
+    # --------------------------------------------------------
+    # Save document
+    # --------------------------------------------------------
+
+    try:
+        document = await device_document_service.save_device_document(
+            db=db,
+            device_id=device.id,
+            file=file,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
+
+    return {
+        "device": {
+            "id": str(device.id),
+            "name": device.name,
+            "model": device.model,
+            "document_code": device.document_code,
+            "safety_class": device.safety_class,
+            "driver_version": device.driver_version,
+            "gui_version": device.gui_version,
+        },
+        "document": {
+            "id": str(document.id),
+            "device_id": str(document.device_id),
+            "filename": document.filename,
+            "file_path": document.file_path,
+            "file_type": document.file_type,
+            "processing_status": document.processing_status,
+            "created_at": document.created_at,
+        },
+    }
+
+
 @devices_router.post("/{device_id}/documents")
 async def upload_device_document(
     device_id: str,
@@ -128,7 +226,7 @@ async def upload_device_document(
     _=Depends(require_role("admin", "engineer")),
 ):
     """
-    Upload a DOCX document associated with a device.
+    Upload a DOCX document associated with an existing device.
 
     Phase 1:
     - Validate device

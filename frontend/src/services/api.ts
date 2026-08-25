@@ -53,10 +53,12 @@ export const devicesApi = {
   /*
    * Upload Device DOCX
    *
-   * No deviceId is required.
-   * The backend endpoint is:
+   * Backend endpoint:
    *
    * POST /devices/documents
+   *
+   * No deviceId is required.
+   * A new device is automatically created with the filename as the device name.
    */
   uploadDocument: (file: File) => {
     const form = new FormData();

@@ -1,6 +1,12 @@
 import { useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+
 import { devicesApi } from "@/services/api";
+
 import type {
   Device,
   DeviceCreate,
@@ -25,32 +31,61 @@ const emptyCreate: DeviceCreate = {
 export default function Devices() {
   const queryClient = useQueryClient();
 
+  // ============================================================
   // Create / Edit
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  // ============================================================
+
+  const [isModalOpen, setIsModalOpen] =
+    useState(false);
+
+  const [editingId, setEditingId] =
+    useState<string | null>(null);
+
   const [form, setForm] =
-    useState<DeviceCreate | DeviceUpdate>(emptyCreate);
+    useState<DeviceCreate | DeviceUpdate>(
+      emptyCreate
+    );
 
+  // ============================================================
   // Delete
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  // ============================================================
 
+  const [deleteId, setDeleteId] =
+    useState<string | null>(null);
+
+  // ============================================================
   // Pagination / Search
+  // ============================================================
+
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+
   const limit = 20;
 
-  // Upload
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // ============================================================
+  // Upload Device DOCX
+  // ============================================================
 
+  const [isUploadModalOpen, setIsUploadModalOpen] =
+    useState(false);
+
+  const [uploadFile, setUploadFile] =
+    useState<File | null>(null);
+
+  const fileInputRef =
+    useRef<HTMLInputElement | null>(null);
+
+  // ============================================================
   // Load devices
+  // ============================================================
+
   const {
     data: deviceResponse,
     isLoading,
     error,
   } = useQuery({
     queryKey: ["devices", page, search],
+
     queryFn: () =>
       devicesApi.list({
         skip: page * limit,
@@ -59,23 +94,36 @@ export default function Devices() {
       }),
   });
 
-  const devices = deviceResponse?.items ?? [];
-  const total = deviceResponse?.total ?? 0;
-  const totalPages = Math.ceil(total / limit);
+  const devices =
+    deviceResponse?.items ?? [];
 
+  const total =
+    deviceResponse?.total ?? 0;
+
+  const totalPages =
+    Math.ceil(total / limit);
+
+  // ============================================================
   // Create device
+  // ============================================================
+
   const createMutation = useMutation({
     mutationFn: devicesApi.create,
+
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["devices"],
         exact: false,
       });
+
       closeModal();
     },
   });
 
+  // ============================================================
   // Update device
+  // ============================================================
+
   const updateMutation = useMutation({
     mutationFn: ({
       id,
@@ -83,31 +131,49 @@ export default function Devices() {
     }: {
       id: string;
       payload: DeviceUpdate;
-    }) => devicesApi.update(id, payload),
+    }) =>
+      devicesApi.update(id, payload),
+
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["devices"],
         exact: false,
       });
+
       closeModal();
     },
   });
 
+  // ============================================================
   // Delete device
+  // ============================================================
+
   const deleteMutation = useMutation({
     mutationFn: devicesApi.remove,
+
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["devices"],
         exact: false,
       });
+
       setDeleteId(null);
     },
   });
 
+  // ============================================================
   // Upload device document
+  //
+  // IMPORTANT:
+  // No deviceId.
+  //
+  // Backend endpoint:
+  // POST /devices/documents
+  // ============================================================
+
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => devicesApi.uploadDocument(file),
+    mutationFn: (file: File) =>
+      devicesApi.uploadDocument(file),
 
     onSuccess: () => {
       queryClient.invalidateQueries({
@@ -119,7 +185,10 @@ export default function Devices() {
     },
   });
 
-  // Create / Edit modal
+  // ============================================================
+  // Create modal
+  // ============================================================
+
   const openCreate = () => {
     setEditingId(null);
 
@@ -133,49 +202,85 @@ export default function Devices() {
     setIsModalOpen(true);
   };
 
+  // ============================================================
+  // Edit modal
+  // ============================================================
+
   const openEdit = (device: Device) => {
     setEditingId(device.id);
 
     setForm({
       name: device.name,
-      model: device.model || "",
-      document_code: device.document_code || "",
-      safety_class: device.safety_class,
-      driver_version: device.driver_version || "",
-      gui_version: device.gui_version || "",
 
-      specs: device.specs.map((s) => ({
-        category: s.category,
-        spec_key: s.spec_key,
-        spec_value: s.spec_value,
-        spec_unit: s.spec_unit || "",
-      })),
+      model:
+        device.model || "",
 
-      alarms: device.alarms.map((a) => ({
-        priority: a.priority || "",
-        condition: a.condition,
-        text_shown: a.text_shown || "",
-        indicator_light: a.indicator_light || "",
-        indicator_sound: a.indicator_sound,
-        required_action: a.required_action || "",
-        alarm_order: a.alarm_order,
-      })),
+      document_code:
+        device.document_code || "",
 
-      commands: device.commands.map((c) => ({
-        direction: c.direction || "",
-        command_name: c.command_name,
-        description: c.description || "",
-        laser_a_mapping: c.laser_a_mapping || "",
-        laser_b_mapping: c.laser_b_mapping || "",
-        command_order: c.command_order,
-      })),
+      safety_class:
+        device.safety_class,
+
+      driver_version:
+        device.driver_version || "",
+
+      gui_version:
+        device.gui_version || "",
+
+      specs: device.specs.map(
+        (s) => ({
+          category: s.category,
+          spec_key: s.spec_key,
+          spec_value: s.spec_value,
+          spec_unit: s.spec_unit || "",
+        })
+      ),
+
+      alarms: device.alarms.map(
+        (a) => ({
+          priority: a.priority || "",
+          condition: a.condition,
+          text_shown:
+            a.text_shown || "",
+          indicator_light:
+            a.indicator_light || "",
+          indicator_sound:
+            a.indicator_sound,
+          required_action:
+            a.required_action || "",
+          alarm_order:
+            a.alarm_order,
+        })
+      ),
+
+      commands: device.commands.map(
+        (c) => ({
+          direction:
+            c.direction || "",
+          command_name:
+            c.command_name,
+          description:
+            c.description || "",
+          laser_a_mapping:
+            c.laser_a_mapping || "",
+          laser_b_mapping:
+            c.laser_b_mapping || "",
+          command_order:
+            c.command_order,
+        })
+      ),
     });
 
     setIsModalOpen(true);
   };
 
+  // ============================================================
+  // Close Create / Edit modal
+  // ============================================================
+
   const closeModal = () => {
     setIsModalOpen(false);
+
     setEditingId(null);
 
     setForm({
@@ -186,9 +291,13 @@ export default function Devices() {
     });
   };
 
+  // ============================================================
   // Upload modal
+  // ============================================================
+
   const openUploadModal = () => {
     setUploadFile(null);
+
     uploadMutation.reset();
 
     if (fileInputRef.current) {
@@ -199,9 +308,12 @@ export default function Devices() {
   };
 
   const closeUploadModal = () => {
-    if (uploadMutation.isPending) return;
+    if (uploadMutation.isPending) {
+      return;
+    }
 
     setIsUploadModalOpen(false);
+
     setUploadFile(null);
 
     if (fileInputRef.current) {
@@ -211,10 +323,15 @@ export default function Devices() {
     uploadMutation.reset();
   };
 
+  // ============================================================
+  // File selection
+  // ============================================================
+
   const handleFileChange = (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
-    const file = event.target.files?.[0] ?? null;
+    const file =
+      event.target.files?.[0] ?? null;
 
     if (!file) {
       setUploadFile(null);
@@ -222,28 +339,46 @@ export default function Devices() {
     }
 
     const isDocx =
-      file.name.toLowerCase().endsWith(".docx") ||
+      file.name
+        .toLowerCase()
+        .endsWith(".docx") ||
       file.type ===
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
     if (!isDocx) {
-      alert("Please select a .docx file.");
+      alert(
+        "Please select a .docx file."
+      );
+
       event.target.value = "";
+
       setUploadFile(null);
+
       return;
     }
 
     setUploadFile(file);
   };
 
+  // ============================================================
+  // Upload submit
+  // ============================================================
+
   const handleUploadSubmit = () => {
-    if (!uploadFile) return;
+    if (!uploadFile) {
+      return;
+    }
 
     uploadMutation.mutate(uploadFile);
   };
 
-  // Device form
-  const handleSubmit = (e: React.FormEvent) => {
+  // ============================================================
+  // Device form submit
+  // ============================================================
+
+  const handleSubmit = (
+    e: React.FormEvent
+  ) => {
     e.preventDefault();
 
     if (editingId) {
@@ -252,13 +387,23 @@ export default function Devices() {
         payload: form as DeviceUpdate,
       });
     } else {
-      createMutation.mutate(form as DeviceCreate);
+      createMutation.mutate(
+        form as DeviceCreate
+      );
     }
   };
 
+  // ============================================================
+  // Update normal field
+  // ============================================================
+
   const updateField = (
     field: string,
-    value: string | boolean | number | undefined
+    value:
+      | string
+      | boolean
+      | number
+      | undefined
   ) => {
     setForm((prev) => ({
       ...prev,
@@ -266,15 +411,28 @@ export default function Devices() {
     }));
   };
 
+  // ============================================================
+  // Update array item
+  // ============================================================
+
   const updateArrayItem = <
-    T extends DeviceSpec | DeviceAlarm | SerialCommand
+    T extends
+      | DeviceSpec
+      | DeviceAlarm
+      | SerialCommand
   >(
-    field: "specs" | "alarms" | "commands",
+    field:
+      | "specs"
+      | "alarms"
+      | "commands",
     index: number,
     item: T
   ) => {
     setForm((prev) => {
-      const arr = [...(prev[field] as T[])];
+      const arr = [
+        ...(prev[field] as T[]),
+      ];
+
       arr[index] = item;
 
       return {
@@ -284,10 +442,20 @@ export default function Devices() {
     });
   };
 
+  // ============================================================
+  // Add array item
+  // ============================================================
+
   const addArrayItem = (
-    field: "specs" | "alarms" | "commands"
+    field:
+      | "specs"
+      | "alarms"
+      | "commands"
   ) => {
-    let empty: DeviceSpec | DeviceAlarm | SerialCommand;
+    let empty:
+      | DeviceSpec
+      | DeviceAlarm
+      | SerialCommand;
 
     if (field === "specs") {
       empty = {
@@ -309,6 +477,7 @@ export default function Devices() {
 
     setForm((prev) => ({
       ...prev,
+
       [field]: [
         ...(prev[field] as unknown[]),
         empty,
@@ -316,27 +485,49 @@ export default function Devices() {
     }));
   };
 
+  // ============================================================
+  // Remove array item
+  // ============================================================
+
   const removeArrayItem = (
-    field: "specs" | "alarms" | "commands",
+    field:
+      | "specs"
+      | "alarms"
+      | "commands",
     index: number
   ) => {
     setForm((prev) => ({
       ...prev,
-      [field]: (prev[field] as unknown[]).filter(
+
+      [field]: (
+        prev[field] as unknown[]
+      ).filter(
         (_, i) => i !== index
       ),
     }));
   };
 
+  // ============================================================
+  // Pending state
+  // ============================================================
+
   const isPending =
     createMutation.isPending ||
     updateMutation.isPending;
 
+  // ============================================================
+  // UI
+  // ============================================================
+
   return (
     <div className="space-y-6">
 
-      {/* Page header */}
+      {/* ====================================================== */}
+      {/* Page Header */}
+      {/* ====================================================== */}
+
       <div className="flex items-center justify-between">
+
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
             Devices
@@ -347,8 +538,9 @@ export default function Devices() {
           </p>
         </div>
 
-        {/* فقط Upload و Create در بالای صفحه */}
         <div className="flex items-center gap-3">
+
+          {/* Upload */}
 
           <button
             type="button"
@@ -357,6 +549,8 @@ export default function Devices() {
           >
             Upload
           </button>
+
+          {/* Create */}
 
           <button
             type="button"
@@ -369,14 +563,22 @@ export default function Devices() {
         </div>
       </div>
 
+      {/* ====================================================== */}
+      {/* Error */}
+      {/* ====================================================== */}
+
       {error && (
         <div className="rounded-md bg-red-50 p-4 text-sm text-red-800">
           Failed to load devices.
         </div>
       )}
 
+      {/* ====================================================== */}
       {/* Search */}
+      {/* ====================================================== */}
+
       <div className="flex items-center gap-4">
+
         <input
           type="text"
           value={search}
@@ -387,14 +589,21 @@ export default function Devices() {
           placeholder="Search devices..."
           className="block w-full max-w-sm rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
         />
+
       </div>
 
-      {/* Devices table */}
+      {/* ====================================================== */}
+      {/* Devices Table */}
+      {/* ====================================================== */}
+
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+
         <table className="min-w-full divide-y divide-gray-200">
 
           <thead className="bg-gray-50">
+
             <tr>
+
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Name
               </th>
@@ -418,10 +627,14 @@ export default function Devices() {
               <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
                 Actions
               </th>
+
             </tr>
+
           </thead>
 
           <tbody className="divide-y divide-gray-100">
+
+            {/* Loading */}
 
             {isLoading && (
               <tr>
@@ -434,22 +647,28 @@ export default function Devices() {
               </tr>
             )}
 
-            {!isLoading && devices.length === 0 && (
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-4 py-6 text-center text-sm text-gray-500"
-                >
-                  No devices found. Create one to get started.
-                </td>
-              </tr>
-            )}
+            {/* Empty */}
+
+            {!isLoading &&
+              devices.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-4 py-6 text-center text-sm text-gray-500"
+                  >
+                    No devices found. Create one to get started.
+                  </td>
+                </tr>
+              )}
+
+            {/* Devices */}
 
             {devices.map((device) => (
               <tr
                 key={device.id}
                 className="hover:bg-gray-50"
               >
+
                 <td className="px-4 py-3 text-sm font-medium text-gray-900">
                   {device.name}
                 </td>
@@ -463,7 +682,8 @@ export default function Devices() {
                 </td>
 
                 <td className="px-4 py-3 text-sm text-gray-600">
-                  {device.driver_version || "-"} /{" "}
+                  {device.driver_version || "-"}{" "}
+                  /{" "}
                   {device.gui_version || "-"}
                 </td>
 
@@ -475,12 +695,13 @@ export default function Devices() {
                     : "-"}
                 </td>
 
-                {/* فقط Edit / Delete */}
                 <td className="px-4 py-3 text-right text-sm">
 
                   <button
                     type="button"
-                    onClick={() => openEdit(device)}
+                    onClick={() =>
+                      openEdit(device)
+                    }
                     className="mr-3 text-blue-600 hover:text-blue-800"
                   >
                     Edit
@@ -489,7 +710,9 @@ export default function Devices() {
                   <button
                     type="button"
                     onClick={() =>
-                      setDeleteId(device.id)
+                      setDeleteId(
+                        device.id
+                      )
                     }
                     className="text-red-600 hover:text-red-800"
                   >
@@ -497,19 +720,27 @@ export default function Devices() {
                   </button>
 
                 </td>
+
               </tr>
             ))}
 
           </tbody>
+
         </table>
+
       </div>
 
+      {/* ====================================================== */}
       {/* Pagination */}
+      {/* ====================================================== */}
+
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
 
           <p className="text-sm text-gray-600">
-            Showing {page * limit + 1}–
+            Showing{" "}
+            {page * limit + 1}
+            {"–"}
             {Math.min(
               (page + 1) * limit,
               total
@@ -522,7 +753,9 @@ export default function Devices() {
             <button
               type="button"
               onClick={() =>
-                setPage((p) => Math.max(0, p - 1))
+                setPage((p) =>
+                  Math.max(0, p - 1)
+                )
               }
               disabled={page === 0}
               className="rounded-md border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
@@ -535,17 +768,24 @@ export default function Devices() {
               onClick={() =>
                 setPage((p) => p + 1)
               }
-              disabled={page >= totalPages - 1}
+              disabled={
+                page >=
+                totalPages - 1
+              }
               className="rounded-md border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
             >
               Next
             </button>
 
           </div>
+
         </div>
       )}
 
-      {/* Create / Edit modal */}
+      {/* ====================================================== */}
+      {/* Create / Edit Modal */}
+      {/* ====================================================== */}
+
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
 
@@ -574,7 +814,11 @@ export default function Devices() {
               className="space-y-4"
             >
 
+              {/* Basic fields */}
+
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+
+                {/* Name */}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
@@ -594,13 +838,17 @@ export default function Devices() {
                   />
                 </div>
 
+                {/* Model */}
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
                     Model
                   </label>
 
                   <input
-                    value={form.model as string}
+                    value={
+                      form.model as string
+                    }
                     onChange={(e) =>
                       updateField(
                         "model",
@@ -610,6 +858,8 @@ export default function Devices() {
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
+                {/* Document Code */}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
@@ -630,6 +880,8 @@ export default function Devices() {
                   />
                 </div>
 
+                {/* Safety */}
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
                     Safety Class
@@ -647,11 +899,21 @@ export default function Devices() {
                     }
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   >
-                    <option value="A">A</option>
-                    <option value="B">B</option>
-                    <option value="C">C</option>
+                    <option value="A">
+                      A
+                    </option>
+
+                    <option value="B">
+                      B
+                    </option>
+
+                    <option value="C">
+                      C
+                    </option>
                   </select>
                 </div>
+
+                {/* Driver */}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
@@ -671,6 +933,8 @@ export default function Devices() {
                     className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
                   />
                 </div>
+
+                {/* GUI */}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
@@ -693,7 +957,10 @@ export default function Devices() {
 
               </div>
 
+              {/* ================================================== */}
               {/* Specs */}
+              {/* ================================================== */}
+
               <div>
 
                 <div className="flex items-center justify-between">
@@ -716,7 +983,9 @@ export default function Devices() {
 
                 <div className="mt-2 space-y-2">
 
-                  {(form.specs as DeviceSpec[]).map(
+                  {(
+                    form.specs as DeviceSpec[]
+                  ).map(
                     (spec, idx) => (
                       <div
                         key={idx}
@@ -725,7 +994,9 @@ export default function Devices() {
 
                         <input
                           placeholder="Category"
-                          value={spec.category}
+                          value={
+                            spec.category
+                          }
                           onChange={(e) =>
                             updateArrayItem(
                               "specs",
@@ -742,7 +1013,9 @@ export default function Devices() {
 
                         <input
                           placeholder="Key"
-                          value={spec.spec_key}
+                          value={
+                            spec.spec_key
+                          }
                           onChange={(e) =>
                             updateArrayItem(
                               "specs",
@@ -759,7 +1032,9 @@ export default function Devices() {
 
                         <input
                           placeholder="Value"
-                          value={spec.spec_value}
+                          value={
+                            spec.spec_value
+                          }
                           onChange={(e) =>
                             updateArrayItem(
                               "specs",
@@ -777,7 +1052,8 @@ export default function Devices() {
                         <input
                           placeholder="Unit"
                           value={
-                            spec.spec_unit || ""
+                            spec.spec_unit ||
+                            ""
                           }
                           onChange={(e) =>
                             updateArrayItem(
@@ -811,9 +1087,13 @@ export default function Devices() {
                   )}
 
                 </div>
+
               </div>
 
+              {/* ================================================== */}
               {/* Alarms */}
+              {/* ================================================== */}
+
               <div>
 
                 <div className="flex items-center justify-between">
@@ -836,7 +1116,9 @@ export default function Devices() {
 
                 <div className="mt-2 space-y-2">
 
-                  {(form.alarms as DeviceAlarm[]).map(
+                  {(
+                    form.alarms as DeviceAlarm[]
+                  ).map(
                     (alarm, idx) => (
                       <div
                         key={idx}
@@ -846,7 +1128,8 @@ export default function Devices() {
                         <input
                           placeholder="Priority"
                           value={
-                            alarm.priority || ""
+                            alarm.priority ||
+                            ""
                           }
                           onChange={(e) =>
                             updateArrayItem(
@@ -864,7 +1147,9 @@ export default function Devices() {
 
                         <input
                           placeholder="Condition"
-                          value={alarm.condition}
+                          value={
+                            alarm.condition
+                          }
                           onChange={(e) =>
                             updateArrayItem(
                               "alarms",
@@ -882,7 +1167,8 @@ export default function Devices() {
                         <input
                           placeholder="Text Shown"
                           value={
-                            alarm.text_shown || ""
+                            alarm.text_shown ||
+                            ""
                           }
                           onChange={(e) =>
                             updateArrayItem(
@@ -919,6 +1205,7 @@ export default function Devices() {
                         />
 
                         <label className="flex items-center gap-1 text-xs text-gray-600">
+
                           <input
                             type="checkbox"
                             checked={
@@ -936,7 +1223,9 @@ export default function Devices() {
                               )
                             }
                           />
+
                           Sound
+
                         </label>
 
                         <button
@@ -957,9 +1246,13 @@ export default function Devices() {
                   )}
 
                 </div>
+
               </div>
 
+              {/* ================================================== */}
               {/* Commands */}
+              {/* ================================================== */}
+
               <div>
 
                 <div className="flex items-center justify-between">
@@ -971,7 +1264,9 @@ export default function Devices() {
                   <button
                     type="button"
                     onClick={() =>
-                      addArrayItem("commands")
+                      addArrayItem(
+                        "commands"
+                      )
                     }
                     className="text-xs text-blue-600 hover:text-blue-800"
                   >
@@ -982,7 +1277,9 @@ export default function Devices() {
 
                 <div className="mt-2 space-y-2">
 
-                  {(form.commands as SerialCommand[]).map(
+                  {(
+                    form.commands as SerialCommand[]
+                  ).map(
                     (cmd, idx) => (
                       <div
                         key={idx}
@@ -992,7 +1289,8 @@ export default function Devices() {
                         <input
                           placeholder="Direction"
                           value={
-                            cmd.direction || ""
+                            cmd.direction ||
+                            ""
                           }
                           onChange={(e) =>
                             updateArrayItem(
@@ -1010,7 +1308,9 @@ export default function Devices() {
 
                         <input
                           placeholder="Command Name"
-                          value={cmd.command_name}
+                          value={
+                            cmd.command_name
+                          }
                           onChange={(e) =>
                             updateArrayItem(
                               "commands",
@@ -1028,7 +1328,8 @@ export default function Devices() {
                         <input
                           placeholder="Description"
                           value={
-                            cmd.description || ""
+                            cmd.description ||
+                            ""
                           }
                           onChange={(e) =>
                             updateArrayItem(
@@ -1102,9 +1403,13 @@ export default function Devices() {
                   )}
 
                 </div>
+
               </div>
 
-              {/* Actions */}
+              {/* ================================================== */}
+              {/* Create / Edit Actions */}
+              {/* ================================================== */}
+
               <div className="flex justify-end gap-2 pt-2">
 
                 <button
@@ -1128,15 +1433,22 @@ export default function Devices() {
               </div>
 
             </form>
+
           </div>
+
         </div>
       )}
 
-      {/* Upload modal */}
+      {/* ====================================================== */}
+      {/* Upload Device Modal */}
+      {/* ====================================================== */}
+
       {isUploadModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
 
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+
+            {/* Header */}
 
             <div className="mb-4 flex items-center justify-between">
 
@@ -1147,7 +1459,9 @@ export default function Devices() {
               <button
                 type="button"
                 onClick={closeUploadModal}
-                disabled={uploadMutation.isPending}
+                disabled={
+                  uploadMutation.isPending
+                }
                 className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
               >
                 Close
@@ -1157,7 +1471,10 @@ export default function Devices() {
 
             <div className="space-y-5">
 
-              {/* فقط Choose File */}
+              {/* ================================================== */}
+              {/* Choose File */}
+              {/* ================================================== */}
+
               <div>
 
                 <label className="block text-sm font-medium text-gray-700">
@@ -1190,7 +1507,7 @@ export default function Devices() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".docx"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   onChange={handleFileChange}
                   disabled={
                     uploadMutation.isPending
@@ -1200,25 +1517,43 @@ export default function Devices() {
 
               </div>
 
+              {/* ================================================== */}
+              {/* Uploading */}
+              {/* ================================================== */}
+
               {uploadMutation.isPending && (
                 <p className="text-sm text-gray-500">
-                  Uploading and processing...
+                  Uploading...
                 </p>
               )}
 
+              {/* ================================================== */}
+              {/* Error */}
+              {/* ================================================== */}
+
               {uploadMutation.isError && (
                 <p className="text-sm text-red-600">
-                  {uploadMutation.error instanceof Error
-                    ? uploadMutation.error.message
+                  {uploadMutation.error instanceof
+                  Error
+                    ? uploadMutation.error
+                        .message
                     : "Upload failed. Please try again."}
                 </p>
               )}
+
+              {/* ================================================== */}
+              {/* Success */}
+              {/* ================================================== */}
 
               {uploadMutation.isSuccess && (
                 <p className="text-sm text-green-600">
                   Upload successful!
                 </p>
               )}
+
+              {/* ================================================== */}
+              {/* Upload Actions */}
+              {/* ================================================== */}
 
               <div className="flex justify-end gap-2 pt-2">
 
@@ -1235,7 +1570,9 @@ export default function Devices() {
 
                 <button
                   type="button"
-                  onClick={handleUploadSubmit}
+                  onClick={
+                    handleUploadSubmit
+                  }
                   disabled={
                     !uploadFile ||
                     uploadMutation.isPending
@@ -1250,11 +1587,16 @@ export default function Devices() {
               </div>
 
             </div>
+
           </div>
+
         </div>
       )}
 
-      {/* Delete confirmation */}
+      {/* ====================================================== */}
+      {/* Delete Confirmation */}
+      {/* ====================================================== */}
+
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
 
@@ -1273,7 +1615,9 @@ export default function Devices() {
 
               <button
                 type="button"
-                onClick={() => setDeleteId(null)}
+                onClick={() =>
+                  setDeleteId(null)
+                }
                 className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Cancel
@@ -1282,7 +1626,9 @@ export default function Devices() {
               <button
                 type="button"
                 onClick={() =>
-                  deleteMutation.mutate(deleteId)
+                  deleteMutation.mutate(
+                    deleteId
+                  )
                 }
                 disabled={
                   deleteMutation.isPending
@@ -1295,7 +1641,9 @@ export default function Devices() {
               </button>
 
             </div>
+
           </div>
+
         </div>
       )}
 
