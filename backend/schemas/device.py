@@ -128,6 +128,17 @@ class SerialCommandOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DeviceDocumentOut(BaseModel):
+    id: uuid.UUID
+    device_id: uuid.UUID
+    filename: str
+    file_size: int
+    content_type: str | None
+    created_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DeviceOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -140,5 +151,6 @@ class DeviceOut(BaseModel):
     specs: list[DeviceSpecOut] = []
     alarms: list[DeviceAlarmOut] = []
     commands: list[SerialCommandOut] = []
+    documents: list[DeviceDocumentOut] = []
 
     model_config = ConfigDict(from_attributes=True)

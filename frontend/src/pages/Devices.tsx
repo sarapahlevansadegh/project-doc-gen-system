@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { devicesApi } from "@/services/api";
 import type {
@@ -9,6 +9,18 @@ import type {
   DeviceAlarm,
   SerialCommand,
 } from "@/types";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
 
 const emptyCreate: DeviceCreate = {
   name: "",
@@ -30,6 +42,8 @@ export default function Devices() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const limit = 20;
 
   const {
@@ -69,6 +83,21 @@ export default function Devices() {
       setDeleteId(null);
     },
   });
+
+  const uploadMutation = useMutation({
+    mutationFn: devicesApi.upload,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["devices"], exact: false });
+      setUploadOpen(false);
+    },
+  });
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadMutation.mutate(file);
+    }
+  };
 
   const openCreate = () => {
     setEditingId(null);
@@ -171,12 +200,20 @@ export default function Devices() {
           <h1 className="text-2xl font-bold text-gray-900">Devices</h1>
           <p className="mt-1 text-sm text-gray-500">Manage devices and their specifications.</p>
         </div>
-        <button
-          onClick={openCreate}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          Create Device
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setUploadOpen(true)}
+            className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Upload Device
+          </button>
+          <button
+            onClick={openCreate}
+            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            Create Device
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -212,6 +249,9 @@ export default function Devices() {
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Created
               </th>
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                Documents
+              </th>
               <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
                 Actions
               </th>
@@ -220,14 +260,14 @@ export default function Devices() {
           <tbody className="divide-y divide-gray-100">
             {isLoading && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500">
+                <td colSpan={7} className="px-4 py-6 text-center text-sm text-gray-500">
                   Loading devices...
                 </td>
               </tr>
             )}
             {!isLoading && devices.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500">
+                <td colSpan={7} className="px-4 py-6 text-center text-sm text-gray-500">
                   No devices found. Create one to get started.
                 </td>
               </tr>
@@ -242,6 +282,22 @@ export default function Devices() {
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-600">
                   {device.created_at ? new Date(device.created_at).toLocaleDateString() : "-"}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  {device.documents && device.documents.length > 0 ? (
+                    <ul className="space-y-1">
+                      {device.documents.map((doc) => (
+                        <li key={doc.id} className="truncate" title={doc.filename}>
+                          {doc.filename}{" "}
+                          <span className="text-xs text-gray-400">
+                            ({formatFileSize(doc.file_size)})
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    "-"
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right text-sm">
                   <button
@@ -580,6 +636,44 @@ export default function Devices() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Device Modal */}
+      {uploadOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900">Upload Device</h2>
+              <button
+                onClick={() => setUploadOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Select a file</label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={handleFileChange}
+                  className="mt-1 block w-full text-sm text-gray-600 file:mr-4 file:rounded-md file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+                />
+                <p className="mt-1 text-xs text-gray-500">Any file type or size is accepted.</p>
+              </div>
+              {uploadMutation.isPending && (
+                <p className="text-sm text-gray-500">Uploading...</p>
+              )}
+              {uploadMutation.isError && (
+                <p className="text-sm text-red-600">Upload failed. Please try again.</p>
+              )}
+              {uploadMutation.isSuccess && (
+                <p className="text-sm text-green-600">Upload successful!</p>
+              )}
+            </div>
           </div>
         </div>
       )}

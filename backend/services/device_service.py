@@ -78,6 +78,7 @@ async def create_device(db: AsyncSession, payload: DeviceCreate) -> Device:
             selectinload(Device.specs),
             selectinload(Device.alarms),
             selectinload(Device.commands),
+            selectinload(Device.documents),
         )
     )
     return result.scalar_one()
@@ -105,6 +106,7 @@ async def list_devices(
             selectinload(Device.specs),
             selectinload(Device.alarms),
             selectinload(Device.commands),
+            selectinload(Device.documents),
         )
     )
     return {"items": list(result.scalars().all()), "total": total, "skip": skip, "limit": limit}
@@ -122,6 +124,7 @@ async def get_device(db: AsyncSession, device_id: str) -> Device | None:
             selectinload(Device.specs),
             selectinload(Device.alarms),
             selectinload(Device.commands),
+            selectinload(Device.documents),
         )
     )
     return result.scalar_one_or_none()
@@ -155,6 +158,7 @@ async def update_device(
             selectinload(Device.specs),
             selectinload(Device.alarms),
             selectinload(Device.commands),
+            selectinload(Device.documents),
         )
     )
     return result.scalar_one()

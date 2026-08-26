@@ -24,6 +24,15 @@ export interface SerialCommand {
   command_order?: number;
 }
 
+export interface DeviceDocument {
+  id: string;
+  device_id: string;
+  filename: string;
+  file_size: number;
+  content_type?: string;
+  created_at?: string;
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -36,6 +45,7 @@ export interface Device {
   specs: DeviceSpec[];
   alarms: DeviceAlarm[];
   commands: SerialCommand[];
+  documents: DeviceDocument[];
 }
 
 export interface DeviceCreate {

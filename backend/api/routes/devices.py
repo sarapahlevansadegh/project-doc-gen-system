@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from api.deps import get_current_active_user, get_db, require_role
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
-from services import device_service
+from services import device_document_service, device_service
 from sqlalchemy.ext.asyncio import AsyncSession
 
 devices_router = APIRouter(prefix="/devices", tags=["devices"])
@@ -37,6 +37,20 @@ async def list_devices(
     search: str | None = Query(None, max_length=100),
 ):
     return await device_service.list_devices(db, skip=skip, limit=limit, search=search)
+
+
+@devices_router.post("/documents", response_model=DeviceOut, status_code=201)
+async def upload_device_document(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """Upload a file and create a new device for it (any file, any size).
+
+    Mirrors the "Upload Reference" flow: the uploaded file becomes a new
+    entry in the device list, named after the file.
+    """
+    return await device_document_service.upload_new_device_document(db, file)
 
 
 @devices_router.get("/{device_id}", response_model=DeviceOut)

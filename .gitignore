@@ -42,6 +42,8 @@ credentials/
 
 generated_docs/
 backend/generated_docs/
+device_documents/
+backend/device_documents/
 
 output.docx
 openapi.json

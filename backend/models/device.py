@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from core.database import Base
+from models.device_document import DeviceDocument
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,6 +29,9 @@ class Device(Base):
         back_populates="device", cascade="all, delete-orphan"
     )
     commands: Mapped[list["SerialCommand"]] = relationship(
+        back_populates="device", cascade="all, delete-orphan"
+    )
+    documents: Mapped[list["DeviceDocument"]] = relationship(
         back_populates="device", cascade="all, delete-orphan"
     )
 

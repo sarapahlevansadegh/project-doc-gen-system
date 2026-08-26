@@ -17,6 +17,15 @@ export const devicesApi = {
   update: (id: string, payload: DeviceUpdate) =>
     api.patch<Device>(`/devices/${id}`, payload).then((r) => r.data),
   remove: (id: string) => api.delete(`/devices/${id}`).then((r) => r.data),
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api
+      .post<Device>("/devices/documents", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
 };
 
 export const referencesApi = {
