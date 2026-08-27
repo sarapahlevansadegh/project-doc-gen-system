@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # --- Document paths ---
     generated_docs_path: str = "./generated_docs"
     max_reference_upload_bytes: int = 10 * 1024 * 1024
+    max_device_document_upload_bytes: int = 50 * 1024 * 1024
 
     # --- Embedding ---
     embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"

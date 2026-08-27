@@ -659,16 +659,20 @@ export default function Devices() {
                 <input
                   ref={fileInputRef}
                   type="file"
+                  accept=".docx,.doc,.pdf"
                   onChange={handleFileChange}
                   className="mt-1 block w-full text-sm text-gray-600 file:mr-4 file:rounded-md file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
                 />
-                <p className="mt-1 text-xs text-gray-500">Any file type or size is accepted.</p>
+                <p className="mt-1 text-xs text-gray-500">.docx, .doc, or .pdf — up to 50 MB.</p>
               </div>
               {uploadMutation.isPending && (
                 <p className="text-sm text-gray-500">Uploading...</p>
               )}
               {uploadMutation.isError && (
-                <p className="text-sm text-red-600">Upload failed. Please try again.</p>
+                <p className="text-sm text-red-600">
+                  {(uploadMutation.error as { response?: { data?: { detail?: string } } })?.response?.data
+                    ?.detail || "Upload failed. Please try again."}
+                </p>
               )}
               {uploadMutation.isSuccess && (
                 <p className="text-sm text-green-600">Upload successful!</p>

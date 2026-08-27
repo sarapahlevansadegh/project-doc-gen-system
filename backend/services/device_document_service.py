@@ -2,15 +2,19 @@
 
 Mirrors the reference-document upload flow (backend/api/routes/rag.py):
 each upload is written to disk under a dedicated storage directory and a
-row is created for it. Unlike reference uploads there is no file-type or
-file-size restriction here - any file, of any size, can be uploaded.
+row is created for it. Uploads are restricted to a whitelist of document
+extensions, capped at ``settings.max_device_document_upload_bytes``, and
+the on-disk filename is sanitized so a crafted ``filename`` cannot escape
+``DEVICE_DOCUMENTS_DIR`` (path traversal).
 """
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
-from fastapi import UploadFile
+from config import settings
+from fastapi import HTTPException, UploadFile
 from models.device import Device
 from models.device_document import DeviceDocument
 from schemas.device import DeviceCreate
@@ -20,20 +24,56 @@ from sqlalchemy.ext.asyncio import AsyncSession
 DEVICE_DOCUMENTS_DIR = Path("device_documents")
 DEVICE_DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
-_CHUNK_SIZE = 1024 * 1024  # 1 MB, streamed to disk so upload size is unbounded
+_CHUNK_SIZE = 1024 * 1024  # 1 MB, streamed to disk in bounded increments
+
+ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf"}
+
+_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Reduce a user-supplied filename to a safe basename.
+
+    Strips any directory components (defeats ``../`` path traversal) and
+    replaces characters outside a conservative whitelist, so the value is
+    safe to use verbatim in an on-disk path.
+    """
+    name = Path(filename).name  # drop any directory components
+    name = _UNSAFE_CHARS.sub("_", name).strip("._") or "file"
+    return name
+
+
+def _validate_extension(filename: str) -> None:
+    if Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed extensions: {allowed}",
+        )
 
 
 async def _save_upload_to_disk(file: UploadFile, dest: Path) -> int:
-    """Stream the upload straight to disk and return the byte count.
+    """Stream the upload to disk, enforcing the configured size cap.
 
-    Streaming (instead of reading the whole file into memory first) is what
-    lets uploads of any size succeed without hitting memory limits.
+    Streaming (instead of reading the whole file into memory first) keeps
+    memory use bounded; checking the running total against the cap on each
+    chunk stops oversized uploads early instead of filling the disk.
     """
+    limit = settings.max_device_document_upload_bytes
     size = 0
-    with dest.open("wb") as out:
-        while chunk := await file.read(_CHUNK_SIZE):
-            out.write(chunk)
-            size += len(chunk)
+    try:
+        with dest.open("wb") as out:
+            while chunk := await file.read(_CHUNK_SIZE):
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds the {limit // (1024 * 1024)} MB upload limit",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
     return size
 
 
@@ -49,6 +89,7 @@ async def upload_new_device_document(
     device (with its document attached) shows up in the device list.
     """
     filename = file.filename or "Untitled"
+    _validate_extension(filename)
     device_name = Path(filename).stem or filename
 
     device = await device_service.create_device(
@@ -68,14 +109,15 @@ async def _attach_document(
     filename: str,
 ) -> DeviceDocument:
     doc_id = uuid.uuid4()
-    dest = DEVICE_DOCUMENTS_DIR / f"{doc_id}_{filename}"
+    safe_filename = _sanitize_filename(filename)
+    dest = DEVICE_DOCUMENTS_DIR / f"{doc_id}_{safe_filename}"
 
     file_size = await _save_upload_to_disk(file, dest)
 
     document = DeviceDocument(
         id=doc_id,
         device_id=device_id,
-        filename=filename,
+        filename=safe_filename,
         storage_path=str(dest),
         file_size=file_size,
         content_type=file.content_type,
