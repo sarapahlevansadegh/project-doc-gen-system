@@ -153,3 +153,6 @@ Thumbs.db
 
 # Uncomment if reference documents are private
 # reference_templates/*.docx
+
+*.patch
+device-upload-feature.bundle
