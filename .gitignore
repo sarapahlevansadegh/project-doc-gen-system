@@ -155,4 +155,4 @@ Thumbs.db
 # reference_templates/*.docx
 
 *.patch
-device-upload-feature.bundle
+*.bundle

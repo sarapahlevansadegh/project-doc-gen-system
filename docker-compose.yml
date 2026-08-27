@@ -44,6 +44,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
 
 
       - DOCGEN_ANTHROPIC_MODEL=${DOCGEN_ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
@@ -51,6 +52,8 @@ services:
       - DOCGEN_GROQ_MODEL=${DOCGEN_GROQ_MODEL:-llama-3.3-70b-versatile}
 
       - DOCGEN_OPENAI_MODEL=${DOCGEN_OPENAI_MODEL:-gpt-4o-mini}
+
+      - DOCGEN_OPENROUTER_MODEL=${DOCGEN_OPENROUTER_MODEL:-google/gemini-2.5-pro}
 
 
       # Ollama Local Models
@@ -82,6 +85,7 @@ services:
       - ./generated_docs:/app/generated_docs
       - ./reference_templates:/app/reference_templates
       - ./device_documents:/app/device_documents
+      - huggingface_cache:/root/.cache/huggingface
 
 
     depends_on:
@@ -145,6 +149,7 @@ services:
 
 volumes:
   postgres_data:
+  huggingface_cache:
 
 
 networks:
