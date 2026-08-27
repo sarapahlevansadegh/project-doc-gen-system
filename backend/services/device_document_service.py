@@ -18,7 +18,7 @@ from fastapi import HTTPException, UploadFile
 from models.device import Device
 from models.device_document import DeviceDocument
 from schemas.device import DeviceCreate
-from services import device_service
+from services import device_document_parser, device_service
 from sqlalchemy.ext.asyncio import AsyncSession
 
 DEVICE_DOCUMENTS_DIR = Path("device_documents")
@@ -125,4 +125,12 @@ async def _attach_document(
     db.add(document)
     await db.commit()
     await db.refresh(document)
+
+    # Best-effort structural parse (Phase 2.5): failures here must not roll
+    # back or fail the upload itself, since the file is already saved and
+    # attached - parse_and_store_sections already swallows its own errors.
+    await device_document_parser.parse_and_store_sections(
+        db, document_id=document.id, storage_path=document.storage_path
+    )
+
     return document

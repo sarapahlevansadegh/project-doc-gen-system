@@ -1,11 +1,15 @@
 """Device management API routes."""
 from __future__ import annotations
 
+import uuid
+
 from api.deps import get_current_active_user, get_db, require_role
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from models.device_document import DeviceDocumentSection
 from pydantic import BaseModel
 from schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
 from services import device_document_service, device_service
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 devices_router = APIRouter(prefix="/devices", tags=["devices"])
@@ -16,6 +20,28 @@ class DeviceListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class DeviceDocumentSectionOut(BaseModel):
+    section_name: str
+    section_type: str
+    heading_level: int
+    parent_section: str | None
+    section_order: int | None
+    content_preview: str
+
+    model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_row(cls, row: DeviceDocumentSection) -> "DeviceDocumentSectionOut":
+        return cls(
+            section_name=row.section_name,
+            section_type=row.section_type,
+            heading_level=row.heading_level,
+            parent_section=row.parent_section,
+            section_order=row.section_order,
+            content_preview=row.content[:200],
+        )
 
 
 @devices_router.post("", response_model=DeviceOut, status_code=201)
@@ -51,6 +77,28 @@ async def upload_device_document(
     entry in the device list, named after the file.
     """
     return await device_document_service.upload_new_device_document(db, file)
+
+
+@devices_router.get(
+    "/documents/{document_id}/sections", response_model=list[DeviceDocumentSectionOut]
+)
+async def list_device_document_sections(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_active_user),
+):
+    """Structural sections extracted from an uploaded Device DOCX (Phase 2.5).
+
+    Empty for non-.docx uploads (.doc/.pdf) or if extraction failed - see
+    services.device_document_parser.
+    """
+    result = await db.execute(
+        select(DeviceDocumentSection)
+        .where(DeviceDocumentSection.document_id == document_id)
+        .order_by(DeviceDocumentSection.section_order)
+    )
+    rows = result.scalars().all()
+    return [DeviceDocumentSectionOut.from_row(row) for row in rows]
 
 
 @devices_router.get("/{device_id}", response_model=DeviceOut)

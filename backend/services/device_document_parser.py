@@ -1,0 +1,75 @@
+"""Parse an uploaded Device DOCX into structured sections (Phase 2.5).
+
+Reuses the same extraction/splitting pipeline already built for reference
+documents (``rag.extractor.extract_docx`` + ``rag.splitter.split_sections``)
+so headings, paragraphs, tables, and figure references are captured the same
+way on both sides - a prerequisite for the Phase 4 agent to later compare
+a device's own document against the reference template.
+
+Only ``.docx`` can be parsed this way (python-docx cannot read ``.pdf`` or
+legacy ``.doc``). For those, parsing is skipped rather than failing the
+upload; Phase 2.5's Vision pipeline is the planned way to cover them later.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from models.device_document import DeviceDocumentSection
+from rag.extractor import extract_docx
+from rag.splitter import split_sections
+from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+PARSEABLE_EXTENSIONS = {".docx"}
+
+
+async def parse_and_store_sections(
+    db: AsyncSession,
+    document_id,
+    storage_path: str,
+) -> int:
+    """Extract structure from a Device DOCX and persist it. Returns the
+    number of sections stored (0 if the file type isn't parseable, or if
+    extraction failed - a bad/corrupt device file should not block the
+    upload itself)."""
+    suffix = Path(storage_path).suffix.lower()
+    if suffix not in PARSEABLE_EXTENSIONS:
+        logger.info(
+            "Skipping structural parse for device document %s: unsupported extension %s",
+            document_id,
+            suffix,
+        )
+        return 0
+
+    try:
+        extracted = extract_docx(storage_path)
+        rag_sections = split_sections(extracted)
+    except Exception:
+        logger.exception(
+            "Failed to parse device document %s at %s", document_id, storage_path
+        )
+        return 0
+
+    count = 0
+    for sec in rag_sections:
+        db.add(
+            DeviceDocumentSection(
+                document_id=document_id,
+                section_name=sec.section_name,
+                section_type=sec.section_type,
+                heading_level=sec.heading_level,
+                parent_section=sec.parent_section,
+                section_order=sec.order,
+                content=sec.content,
+                figure_refs=sec.figure_refs,
+            )
+        )
+        count += 1
+
+    await db.commit()
+    logger.info(
+        "Parsed device document %s: %d sections stored", document_id, count
+    )
+    return count
