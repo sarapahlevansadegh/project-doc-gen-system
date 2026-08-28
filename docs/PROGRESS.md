@@ -21,14 +21,14 @@
 
 ```mermaid
 flowchart TD
-    A["فاز ۱\nUpload Device DOCX"] --> B["رفع باگ‌های زیرساخت\nMigration + Docker"]
-    B --> C["سخت‌سازی امنیتی\nحجم / نوع فایل / نام فایل"]
-    C --> D["پشتیبانی چند LLM\nOpenRouter و غیره"]
-    D --> E["فاز ۲.۵ (بخش ۱)\nپارسر Device DOCX"]
-    E --> F["فاز ۲.۵ (بخش ۲)\nخط‌لوله‌ی Vision\n(در پیش رو)"]
-    F --> G["فاز ۳.۵\nDevice در Knowledge Base"]
-    G --> H["فاز ۴\nAgent مقایسه‌گر"]
-    H --> I["فاز ۵\nDOCX Builder واقعی"]
+    A["فاز ۱<br/>Upload Device DOCX"] --> B["رفع باگ‌های زیرساخت<br/>Migration + Docker"]
+    B --> C["سخت‌سازی امنیتی<br/>حجم / نوع فایل / نام فایل"]
+    C --> D["پشتیبانی چند LLM<br/>OpenRouter و غیره"]
+    D --> E["فاز ۲.۵ (بخش ۱)<br/>پارسر Device DOCX"]
+    E --> F["فاز ۲.۵ (بخش ۲)<br/>خط‌لوله‌ی Vision<br/>(در پیش رو)"]
+    F --> G["فاز ۳.۵<br/>Device در Knowledge Base"]
+    G --> H["فاز ۴<br/>Agent مقایسه‌گر"]
+    H --> I["فاز ۵<br/>DOCX Builder واقعی"]
 
     style A fill:#d5e8f0
     style B fill:#d5e8f0
@@ -88,8 +88,8 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     A[تغییر کد] --> B{"Docker rebuild شد؟"}
-    B -- خیر --> C["❌ کانتینر قدیمی\nهنوز در حال اجراست"]
-    B -- بله، با --build --force-recreate --> D["✅ کانتینر با کد جدید\nاجرا می‌شود"]
+    B -- خیر --> C["❌ کانتینر قدیمی<br/>هنوز در حال اجراست"]
+    B -->|"بله (build و force-recreate)"| D["✅ کانتینر با کد جدید<br/>اجرا می‌شود"]
 ```
 
 ---
@@ -103,12 +103,12 @@ flowchart TD
     subgraph before["قبل"]
         A1["حجم فایل: نامحدود"]
         A2["نوع فایل: هر چیزی"]
-        A3["نام فایل: مستقیم از کاربر\n(ریسک Path Traversal)"]
+        A3["نام فایل: مستقیم از کاربر<br/>(ریسک Path Traversal)"]
     end
     subgraph after["بعد"]
-        B1["حجم فایل: سقف ۵۰ مگابایت\n(چک‌شده حین استریم، نه بعد از آپلود کامل)"]
+        B1["حجم فایل: سقف ۵۰ مگابایت<br/>(چک‌شده حین استریم، نه بعد از آپلود کامل)"]
         B2["نوع فایل: فقط docx. / doc. / pdf."]
-        B3["نام فایل: sanitize می‌شود\n(حذف مسیر و کاراکترهای غیرمجاز)"]
+        B3["نام فایل: sanitize می‌شود<br/>(حذف مسیر و کاراکترهای غیرمجاز)"]
     end
     before -.->|"اصلاح شد"| after
 
@@ -135,13 +135,13 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    ENV[".env\nDOCGEN_LLM_PROVIDER"] --> LLM["backend/agent/llm.py\n(لایه‌ی انتزاعی)"]
+    ENV[".env<br/>DOCGEN_LLM_PROVIDER"] --> LLM["backend/agent/llm.py<br/>(لایه‌ی انتزاعی)"]
     LLM --> P1[Gemini]
     LLM --> P2[Anthropic]
     LLM --> P3[Groq]
     LLM --> P4[OpenAI]
     LLM --> P5[Ollama - لوکال]
-    LLM --> P6["OpenRouter\n(دسترسی به مدل‌های متعدد)"]
+    LLM --> P6["OpenRouter<br/>(دسترسی به مدل‌های متعدد)"]
 ```
 
 > نکته‌ی عملی که حین تست کشف شد: مدل‌های «reasoning» (مثل `GLM-5.3-flash` که پشت نام مستعار «Ox Alpha» بود) گاهی فیلد `content` را خالی برمی‌گردانند چون خروجی اصلی‌شان در بخش استدلال مصرف می‌شود؛ برای تولید سند نهایی، مدل‌های معمولی (مثل `gpt-4o-mini`) پایدارتر عمل کردند.
@@ -160,9 +160,9 @@ flowchart TD
     end
     subgraph new["بعد از این فاز"]
         E1["Device DOCX آپلود می‌شود"] --> E2["فایل ذخیره می‌شود"]
-        E2 --> E3["پارسر اجرا می‌شود\n(همان منطق Reference)"]
-        E3 --> E4["heading / پاراگراف / جدول /\nرفرنس تصویر استخراج می‌شود"]
-        E4 --> E5["در جدول device_document_sections\nذخیره می‌شود"]
+        E2 --> E3["پارسر اجرا می‌شود<br/>(همان منطق Reference)"]
+        E3 --> E4["heading / پاراگراف / جدول /<br/>رفرنس تصویر استخراج می‌شود"]
+        E4 --> E5["در جدول device_document_sections<br/>ذخیره می‌شود"]
     end
 ```
 
@@ -190,22 +190,30 @@ flowchart TD
 ```mermaid
 gitGraph
     commit id: "master"
-    branch "feature/new-feature-document-update"
-    checkout "feature/new-feature-document-update"
+    branch phase1_upload
+    checkout phase1_upload
     commit id: "فاز ۱: آپلود Device"
-    checkout master
-    merge "feature/new-feature-document-update"
-    branch "fix/device-upload-security"
-    checkout "fix/device-upload-security"
+    checkout main
+    merge phase1_upload
+    branch security_fix
+    checkout security_fix
     commit id: "سخت‌سازی امنیتی"
-    commit id: "docker-compose:\nhuggingface + OpenRouter"
-    branch "feature/document-parser-v2"
-    checkout "feature/document-parser-v2"
+    commit id: "docker-compose:<br/>huggingface + OpenRouter"
+    branch parser_v2
+    checkout parser_v2
     commit id: "فاز ۲.۵: پارسر Device"
     commit id: "رفع باگ طول متن"
-    checkout "fix/device-upload-security"
-    merge "feature/document-parser-v2"
+    checkout security_fix
+    merge parser_v2
 ```
+
+> نکته: به‌دلیل نام‌گذاری داخلی Mermaid، برنچ اصلی در نمودار بالا `main` نامیده شده؛ در ریپازیتوری واقعی این برنچ `master` نام دارد.
+>
+> نگاشت نام‌های کوتاه‌شده در نمودار (به‌دلیل محدودیت Mermaid با کاراکتر `/` در اسم برنچ): | نام کوتاه در نمودار | نام واقعی برنچ |
+> |---|---|
+> | `phase1_upload` | `feature/new-feature-document-update` |
+> | `security_fix` | `fix/device-upload-security` |
+> | `parser_v2` | `feature/document-parser-v2` |
 
 | برنچ | محتوا | وضعیت |
 |---|---|---|
@@ -218,10 +226,10 @@ gitGraph
 
 ```mermaid
 flowchart TD
-    A["فاز ۲.۵ (بخش ۲)\nخط‌لوله‌ی Vision\nSurya Layout + Gemini\nبرای PDF / .doc / تصاویر"] --> B["فاز ۳.۵\nchunk + embed کردن\nمحتوای Device در Knowledge Base"]
-    B --> C["فاز ۴\nAgent مقایسه‌گر واقعی\nReference در برابر Device"]
-    C --> D["فاز ۵\nDOCX Builder واقعی\nساخت جدول و درج تصویر واقعی"]
-    D --> E["فاز ۶ (آینده، جدا)\nتولید تصویر/نمودار کاملاً جدید"]
+    A["فاز ۲.۵ (بخش ۲)<br/>خط‌لوله‌ی Vision<br/>Surya Layout + Gemini<br/>برای PDF / .doc / تصاویر"] --> B["فاز ۳.۵<br/>chunk + embed کردن<br/>محتوای Device در Knowledge Base"]
+    B --> C["فاز ۴<br/>Agent مقایسه‌گر واقعی<br/>Reference در برابر Device"]
+    C --> D["فاز ۵<br/>DOCX Builder واقعی<br/>ساخت جدول و درج تصویر واقعی"]
+    D --> E["فاز ۶ (آینده، جدا)<br/>تولید تصویر/نمودار کاملاً جدید"]
 ```
 
 جزئیات کامل هر فاز (شامل ابزارهای قابل‌نصب و مقایسه‌ی مدل‌های Vision) در سند جداگانه‌ی نقشه‌راه پروژه موجود است.
