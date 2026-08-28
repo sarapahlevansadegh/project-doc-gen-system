@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 
 PARSEABLE_EXTENSIONS = {".docx"}
 
+_SECTION_NAME_MAX = 255
+
+
+def _truncate(text: str | None, max_len: int) -> str | None:
+    """Defensively cap a value at the DB column limit.
+
+    Reference/device headings occasionally come out longer than a normal
+    heading (a mis-detected paragraph, an unusually long title) - truncate
+    rather than let the whole upload fail on one oversized row.
+    """
+    if text is None:
+        return None
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
 
 async def parse_and_store_sections(
     db: AsyncSession,
@@ -57,10 +71,10 @@ async def parse_and_store_sections(
         db.add(
             DeviceDocumentSection(
                 document_id=document_id,
-                section_name=sec.section_name,
+                section_name=_truncate(sec.section_name, _SECTION_NAME_MAX) or "",
                 section_type=sec.section_type,
                 heading_level=sec.heading_level,
-                parent_section=sec.parent_section,
+                parent_section=_truncate(sec.parent_section, _SECTION_NAME_MAX),
                 section_order=sec.order,
                 content=sec.content,
                 figure_refs=sec.figure_refs,
@@ -68,7 +82,19 @@ async def parse_and_store_sections(
         )
         count += 1
 
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        # A row-level DB error (e.g. an unexpected constraint) must not take
+        # the whole upload down - roll back so the session is usable again
+        # and the caller's own commit (the DeviceDocument row, already
+        # saved) is unaffected.
+        await db.rollback()
+        logger.exception(
+            "Failed to store parsed sections for device document %s", document_id
+        )
+        return 0
+
     logger.info(
         "Parsed device document %s: %d sections stored", document_id, count
     )
