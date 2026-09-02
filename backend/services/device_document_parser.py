@@ -16,6 +16,7 @@ import logging
 from pathlib import Path
 
 from models.device_document import DeviceDocumentSection
+from rag import image_extractor
 from rag.extractor import extract_docx
 from rag.splitter import split_sections
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,8 +67,27 @@ async def parse_and_store_sections(
         )
         return 0
 
+    # Pull the real image bytes out of the docx zip for every figure
+    # referenced anywhere in the document (Phase 2.5, Part B), in one pass -
+    # sections only ever carried a rel_id pointer to the image before this.
+    all_rel_ids = {
+        fig["rel_id"]
+        for sec in rag_sections
+        for fig in sec.figure_refs
+        if fig.get("rel_id")
+    }
+    saved_images = image_extractor.extract_images(
+        storage_path, document_id=document_id, rel_ids=all_rel_ids
+    )
+
     count = 0
     for sec in rag_sections:
+        figure_refs = [
+            {**fig, "image_path": saved_images[fig["rel_id"]]}
+            if fig.get("rel_id") in saved_images
+            else fig
+            for fig in sec.figure_refs
+        ]
         db.add(
             DeviceDocumentSection(
                 document_id=document_id,
@@ -77,7 +97,7 @@ async def parse_and_store_sections(
                 parent_section=_truncate(sec.parent_section, _SECTION_NAME_MAX),
                 section_order=sec.order,
                 content=sec.content,
-                figure_refs=sec.figure_refs,
+                figure_refs=figure_refs,
             )
         )
         count += 1

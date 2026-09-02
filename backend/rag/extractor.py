@@ -100,31 +100,30 @@ def _table_to_rows(table: Table) -> list[list[str]]:
     return rows
 
 
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
 def _collect_figure(paragraph: Paragraph, counter: list[int]) -> FigureRef | None:
     """Detect an image inside a paragraph's runs and capture metadata."""
-    blips = paragraph._p.findall(
+    doc_prs = paragraph._p.findall(
         ".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr"
     )
-    if not blips:
-        # try alternate namespace
-        blips = paragraph._p.findall(
-            ".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr"
-        )
-    for doc_pr in blips:
-        counter[0] += 1
-        rel_id = None
-        for el in paragraph._p.iter():
-            emb = el.find(
-                "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
-            )
-            if emb is not None:
-                rel_id = emb.get(
-                    "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
-                )
-                break
-        alt = doc_pr.get("descr") or doc_pr.get("title")
-        return FigureRef(index=counter[0], rel_id=rel_id, alt_text=alt)
-    return None
+    if not doc_prs:
+        return None
+
+    doc_pr = doc_prs[0]
+    counter[0] += 1
+
+    # r:embed lives as an *attribute* on <a:blip>, not a child element, so
+    # it must be read with .get() on the blip itself rather than .find().
+    rel_id = None
+    blip = paragraph._p.find(f".//{_A_NS}blip")
+    if blip is not None:
+        rel_id = blip.get(f"{_R_NS}embed")
+
+    alt = doc_pr.get("descr") or doc_pr.get("title")
+    return FigureRef(index=counter[0], rel_id=rel_id, alt_text=alt)
 
 
 def extract_docx(path: str | Path) -> list[ExtractedSection]:
