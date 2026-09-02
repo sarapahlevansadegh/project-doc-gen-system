@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { devicesApi } from "@/services/api";
 import type {
@@ -8,6 +8,8 @@ import type {
   DeviceSpec,
   DeviceAlarm,
   SerialCommand,
+  DeviceDocument,
+  DeviceDocumentSection,
 } from "@/types";
 
 function formatFileSize(bytes: number): string {
@@ -20,6 +22,61 @@ function formatFileSize(bytes: number): string {
     unitIndex += 1;
   }
   return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+/**
+ * Figure images sit behind the same bearer-token auth as every other API
+ * call, so a plain <img src="/devices/.../images/..."> would get a 401 -
+ * the browser never attaches the app's Authorization header to it. This
+ * fetches the bytes through axios instead and renders them as a local
+ * object URL, revoking it on unmount/change to avoid leaking memory.
+ */
+function DeviceFigureImage({
+  documentId,
+  relId,
+  altText,
+}: {
+  documentId: string;
+  relId: string;
+  altText: string | null;
+}) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let currentUrl: string | null = null;
+    let cancelled = false;
+
+    devicesApi
+      .image(documentId, relId)
+      .then((blob) => {
+        if (cancelled) return;
+        currentUrl = URL.createObjectURL(blob);
+        setObjectUrl(currentUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
+  }, [documentId, relId]);
+
+  if (failed) {
+    return <p className="text-xs text-red-500">Failed to load image.</p>;
+  }
+  if (!objectUrl) {
+    return <div className="h-24 w-24 animate-pulse rounded-md bg-gray-100" />;
+  }
+  return (
+    <img
+      src={objectUrl}
+      alt={altText ?? "Extracted figure"}
+      className="max-h-64 max-w-full rounded-md border border-gray-200 object-contain"
+    />
+  );
 }
 
 const emptyCreate: DeviceCreate = {
@@ -45,6 +102,28 @@ export default function Devices() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const limit = 20;
+
+  const [sectionsDoc, setSectionsDoc] = useState<DeviceDocument | null>(null);
+  const [sections, setSections] = useState<DeviceDocumentSection[]>([]);
+  const [sectionsLoading, setSectionsLoading] = useState(false);
+
+  const openSections = async (doc: DeviceDocument) => {
+    setSectionsDoc(doc);
+    setSectionsLoading(true);
+    try {
+      const data = await devicesApi.sections(doc.id);
+      setSections(data);
+    } catch {
+      setSections([]);
+    } finally {
+      setSectionsLoading(false);
+    }
+  };
+
+  const closeSections = () => {
+    setSectionsDoc(null);
+    setSections([]);
+  };
 
   const {
     data: deviceResponse,
@@ -291,7 +370,13 @@ export default function Devices() {
                           {doc.filename}{" "}
                           <span className="text-xs text-gray-400">
                             ({formatFileSize(doc.file_size)})
-                          </span>
+                          </span>{" "}
+                          <button
+                            onClick={() => openSections(doc)}
+                            className="text-xs text-blue-600 hover:text-blue-800"
+                          >
+                            Sections
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -676,6 +761,63 @@ export default function Devices() {
               )}
               {uploadMutation.isSuccess && (
                 <p className="text-sm text-green-600">Upload successful!</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sections Drawer */}
+      {sectionsDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="max-h-[80vh] w-full max-w-2xl overflow-hidden rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Sections</h3>
+                <p className="text-sm text-gray-500">{sectionsDoc.filename}</p>
+              </div>
+              <button onClick={closeSections} className="text-gray-400 hover:text-gray-600">
+                Close
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-6">
+              {sectionsLoading ? (
+                <p className="text-sm text-gray-500">Loading sections...</p>
+              ) : sections.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  No sections found (only .docx uploads are parsed).
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {sections.map((section, idx) => (
+                    <div key={idx} className="rounded-md border border-gray-200 p-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-medium text-gray-900">
+                          {section.section_name}
+                        </h4>
+                        <span className="text-xs text-gray-500">{section.section_type}</span>
+                      </div>
+                      {section.parent_section && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Parent: {section.parent_section}
+                        </p>
+                      )}
+                      <p className="mt-2 text-sm text-gray-600">{section.content_preview}</p>
+                      {section.figures.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-3">
+                          {section.figures.map((fig) => (
+                            <DeviceFigureImage
+                              key={fig.rel_id}
+                              documentId={sectionsDoc.id}
+                              relId={fig.rel_id}
+                              altText={fig.alt_text}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>

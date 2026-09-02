@@ -82,6 +82,22 @@ export interface ReferenceDocument {
   created_at?: string;
 }
 
+export interface DeviceDocumentFigure {
+  rel_id: string;
+  alt_text: string | null;
+  image_url: string | null;
+}
+
+export interface DeviceDocumentSection {
+  section_name: string;
+  section_type: string;
+  heading_level: number;
+  parent_section: string | null;
+  section_order: number | null;
+  content_preview: string;
+  figures: DeviceDocumentFigure[];
+}
+
 export interface ReferenceSection {
   section_name: string;
   section_type: string;

@@ -4,6 +4,7 @@ import type {
   DeviceCreate,
   DeviceUpdate,
   DeviceListResponse,
+  DeviceDocumentSection,
   ReferenceDocument,
   ReferenceSection,
   DocumentHistoryItem,
@@ -26,6 +27,18 @@ export const devicesApi = {
       })
       .then((r) => r.data);
   },
+  sections: (documentId: string) =>
+    api
+      .get<DeviceDocumentSection[]>(`/devices/documents/${documentId}/sections`)
+      .then((r) => r.data),
+  // Images are behind the same bearer-token auth as everything else, so a
+  // plain <img src="..."> can't fetch them - the caller pulls the bytes as
+  // a blob (auth header attached automatically by the axios interceptor)
+  // and turns that into an object URL to hand to <img>.
+  image: (documentId: string, relId: string) =>
+    api
+      .get(`/devices/documents/${documentId}/images/${relId}`, { responseType: "blob" })
+      .then((r) => r.data as Blob),
 };
 
 export const referencesApi = {
