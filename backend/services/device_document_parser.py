@@ -18,6 +18,7 @@ from pathlib import Path
 from models.device_document import DeviceDocumentSection
 from rag import image_extractor
 from rag.extractor import extract_docx
+from rag.image_captioner import caption_image, captioning_enabled
 from rag.splitter import split_sections
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -88,6 +89,27 @@ async def parse_and_store_sections(
             else fig
             for fig in sec.figure_refs
         ]
+
+        # Optional Vision LLM captioning (Phase 3, item 2). Off by default;
+        # a caption failure never blocks parsing/storage of the section -
+        # caption_image() is fail-soft and returns None on any problem.
+        # The caption is appended to `content` (so it becomes searchable
+        # text for embedding) and also kept per-image in figure_refs (so the
+        # UI can show it next to the figure); the image itself is untouched.
+        content = sec.content
+        if captioning_enabled():
+            captions: list[str] = []
+            for fig in figure_refs:
+                image_path = fig.get("image_path")
+                if not image_path:
+                    continue
+                caption = caption_image(image_path)
+                if caption:
+                    fig["caption"] = caption
+                    captions.append(caption)
+            if captions:
+                content = (content + "\n\n" + "\n".join(captions)).strip()
+
         db.add(
             DeviceDocumentSection(
                 document_id=document_id,
@@ -96,7 +118,7 @@ async def parse_and_store_sections(
                 heading_level=sec.heading_level,
                 parent_section=_truncate(sec.parent_section, _SECTION_NAME_MAX),
                 section_order=sec.order,
-                content=sec.content,
+                content=content,
                 figure_refs=figure_refs,
             )
         )
