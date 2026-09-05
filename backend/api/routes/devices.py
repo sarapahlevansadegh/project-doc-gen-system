@@ -9,7 +9,9 @@ from api.deps import get_current_active_user, get_db, require_role
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from models.device_document import DeviceDocumentSection
+from models.document_chunk import DocumentChunk
 from pydantic import BaseModel
+from rag.chunk_service import generate_and_store_chunks
 from schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
 from services import device_document_service, device_service
 from sqlalchemy import select
@@ -67,6 +69,29 @@ class DeviceDocumentSectionOut(BaseModel):
         )
 
 
+class DeviceDocumentChunkOut(BaseModel):
+    chunk_index: int
+    token_count: int | None
+    content_preview: str
+    has_embedding: bool
+
+    model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_row(cls, row: DocumentChunk) -> "DeviceDocumentChunkOut":
+        return cls(
+            chunk_index=row.chunk_index,
+            token_count=row.token_count,
+            content_preview=row.chunk_text[:200],
+            has_embedding=row.embedding is not None,
+        )
+
+
+class GenerateChunksResponse(BaseModel):
+    document_id: uuid.UUID
+    chunk_count: int
+
+
 @devices_router.post("", response_model=DeviceOut, status_code=201)
 async def create_device(
     payload: DeviceCreate,
@@ -122,6 +147,53 @@ async def list_device_document_sections(
     )
     rows = result.scalars().all()
     return [DeviceDocumentSectionOut.from_row(row) for row in rows]
+
+
+@devices_router.post(
+    "/documents/{document_id}/chunks", response_model=GenerateChunksResponse
+)
+async def generate_device_document_chunks(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """Generate (or regenerate) RAG chunks + embeddings for a device
+    document's already-extracted sections (Phase 3).
+
+    A separate, explicit step from upload since embedding is comparatively
+    expensive - callers can re-trigger it independently, e.g. after a
+    chunking-logic change, without re-uploading the document.
+    """
+    result = await db.execute(
+        select(DeviceDocumentSection.id).where(
+            DeviceDocumentSection.document_id == document_id
+        )
+    )
+    if result.first() is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No extracted sections found for this document (upload or extraction may have failed)",
+        )
+
+    chunk_count = await generate_and_store_chunks(db, document_id)
+    return GenerateChunksResponse(document_id=document_id, chunk_count=chunk_count)
+
+
+@devices_router.get(
+    "/documents/{document_id}/chunks", response_model=list[DeviceDocumentChunkOut]
+)
+async def list_device_document_chunks(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_active_user),
+):
+    result = await db.execute(
+        select(DocumentChunk)
+        .where(DocumentChunk.device_document_id == document_id)
+        .order_by(DocumentChunk.chunk_index)
+    )
+    rows = result.scalars().all()
+    return [DeviceDocumentChunkOut.from_row(row) for row in rows]
 
 
 @devices_router.get(
