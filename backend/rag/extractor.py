@@ -76,6 +76,9 @@ def _iter_block_items(parent) -> Iterator:
             yield Table(child, parent)
 
 
+_MAX_OUTLINE_HEADING_WORDS = 15
+
+
 def _heading_level(paragraph: Paragraph) -> int | None:
     style_name = (paragraph.style.name or "") if paragraph.style else ""
     match = re.match(r"Heading\s+(\d+)", style_name, re.IGNORECASE)
@@ -88,6 +91,16 @@ def _heading_level(paragraph: Paragraph) -> int | None:
             "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}outlineLvl"
         )
         if ol is not None:
+            # Some source documents (often converted from PDF, or authored
+            # with inconsistent templates) apply an outline level to
+            # ordinary body paragraphs via direct formatting rather than a
+            # Heading style. A real heading is a short phrase; a full
+            # sentence/paragraph carrying an outline level is body text
+            # mislabeled by the source document, not a heading - treating
+            # it as one would fragment a real section into empty stubs.
+            text = paragraph.text.strip()
+            if not text or len(text.split()) > _MAX_OUTLINE_HEADING_WORDS:
+                return None
             return int(ol.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val")) + 1
     return None
 
