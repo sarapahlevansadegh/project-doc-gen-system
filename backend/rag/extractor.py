@@ -100,6 +100,36 @@ def _table_to_rows(table: Table) -> list[list[str]]:
     return rows
 
 
+def _escape_md_cell(text: str) -> str:
+    """Escape characters that would break Markdown table syntax."""
+    return text.replace("|", "\\|").strip()
+
+
+def _table_to_markdown(rows: list[list[str]]) -> str:
+    """Serialize table rows into a real Markdown table.
+
+    The first row is treated as the header (the common case for reference
+    documents). Rows are padded/truncated to the header's column count so a
+    ragged docx table still produces valid Markdown. Returns "" for an empty
+    table so callers can join it into a section body without adding blank
+    lines.
+    """
+    if not rows:
+        return ""
+
+    col_count = len(rows[0]) or 1
+
+    def _pad(row: list[str]) -> list[str]:
+        cells = row[:col_count] + [""] * max(0, col_count - len(row))
+        return [_escape_md_cell(c) for c in cells]
+
+    lines = ["| " + " | ".join(_pad(rows[0])) + " |"]
+    lines.append("| " + " | ".join(["---"] * col_count) + " |")
+    for row in rows[1:]:
+        lines.append("| " + " | ".join(_pad(row)) + " |")
+    return "\n".join(lines)
+
+
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
@@ -153,7 +183,7 @@ def extract_docx(path: str | Path) -> list[ExtractedSection]:
             flat.append(
                 ExtractedBlock(
                     kind="table",
-                    text="\n".join(" | ".join(r) for r in rows),
+                    text=_table_to_markdown(rows),
                     table_rows=rows,
                 )
             )
