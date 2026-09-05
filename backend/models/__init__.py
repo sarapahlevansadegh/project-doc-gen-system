@@ -2,3 +2,4 @@ from models.device import Device, DeviceAlarm, DeviceSpec, SerialCommand
 from models.device_document import DeviceDocument, DeviceDocumentSection
 from models.document import GeneratedDocument
 from models.template import DocumentTemplate, ReferenceDocument
+from backend.models.document_chunk import DocumentChunk

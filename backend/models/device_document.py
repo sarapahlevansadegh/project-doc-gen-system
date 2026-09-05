@@ -28,6 +28,9 @@ class DeviceDocument(Base):
     sections: Mapped[list["DeviceDocumentSection"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        back_populates="device_document", cascade="all, delete-orphan"
+    )
 
 
 class DeviceDocumentSection(Base):
@@ -62,6 +65,10 @@ class DeviceDocumentSection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     document: Mapped["DeviceDocument"] = relationship(back_populates="sections")
+    
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        back_populates="section", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_device_document_sections_doc_order", "document_id", "section_order"),
