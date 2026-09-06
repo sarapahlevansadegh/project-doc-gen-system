@@ -126,6 +126,15 @@ async def get_device(db: AsyncSession, device_id: str) -> Device | None:
             selectinload(Device.commands),
             selectinload(Device.documents),
         )
+        # Without this, a Device already in this session's identity map
+        # (e.g. just created a moment ago in the same request, before it
+        # had any documents attached) can be returned as-is with its
+        # already-loaded (and now stale/empty) `documents` collection,
+        # instead of re-running selectinload against the current DB state.
+        # Bit us right after upload_new_device_document(): the response's
+        # documents list came back empty even though the document had
+        # just been committed successfully.
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 
