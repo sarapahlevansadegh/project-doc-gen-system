@@ -54,6 +54,16 @@ async def generate_and_store_chunks(
             content=section.content,
             token_counter=token_counter,
         )
+        # Every chunk from this section carries all of the section's
+        # figures - the extractor already ties figures to their section as
+        # a whole (not to individual paragraphs), so a finer per-chunk split
+        # of figures would be precision the source data doesn't actually
+        # have. Only figures that were actually extracted to disk
+        # (image_path present) are worth linking; a figure_refs entry
+        # without one has nothing for an agent to open.
+        section_figures = [
+            fig for fig in (section.figure_refs or []) if fig.get("image_path")
+        ]
         for chunk in chunks:
             pending_rows.append(
                 DocumentChunk(
@@ -62,6 +72,7 @@ async def generate_and_store_chunks(
                     chunk_text=chunk.text,
                     chunk_index=len(pending_rows),
                     token_count=chunk.token_count,
+                    figure_refs=section_figures,
                 )
             )
             pending_texts.append(chunk.text)

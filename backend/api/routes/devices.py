@@ -74,16 +74,27 @@ class DeviceDocumentChunkOut(BaseModel):
     token_count: int | None
     content_preview: str
     has_embedding: bool
+    figures: list[DeviceDocumentFigureOut]
 
     model_config = {"from_attributes": True}
 
     @classmethod
     def from_row(cls, row: DocumentChunk) -> "DeviceDocumentChunkOut":
+        figures = [
+            DeviceDocumentFigureOut(
+                rel_id=fig["rel_id"],
+                alt_text=fig.get("alt_text"),
+                image_url=f"/devices/documents/{row.device_document_id}/images/{fig['rel_id']}",
+            )
+            for fig in (row.figure_refs or [])
+            if fig.get("rel_id")
+        ]
         return cls(
             chunk_index=row.chunk_index,
             token_count=row.token_count,
             content_preview=row.chunk_text[:200],
             has_embedding=row.embedding is not None,
+            figures=figures,
         )
 
 

@@ -4,7 +4,7 @@ from datetime import datetime
 from core.database import Base
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, Integer, Text, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -32,6 +32,11 @@ class DocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[list] = mapped_column(Vector(768), nullable=True)
+    # All figures belonging to this chunk's parent section (rel_id, alt_text,
+    # image_path, caption) - see rag/chunk_service.py. Direct link so a
+    # Phase 4 agent working from a chunk doesn't need an extra query through
+    # device_document_sections.figure_refs to find its images.
+    figure_refs: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
