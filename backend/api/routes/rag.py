@@ -19,6 +19,7 @@ from rag.retriever import (
     store_sections,
 )
 from rag.splitter import split_sections
+from services.document_diff_planner import build_document_plan
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -159,6 +160,49 @@ async def get_matching_device_chunks(
     """
     matches = await find_matching_device_chunks(db, section_id, device_document_id, k=k)
     return [MatchingChunkOut.from_dict(m) for m in matches]
+
+
+class SectionPlanOut(BaseModel):
+    section_id: uuid.UUID
+    section_name: str
+    changed: bool
+    reason: str
+    new_paragraphs: list[str] | None
+    new_table_markdown: str | None
+    best_similarity: float | None
+
+
+@rag_router.get(
+    "/reference/{reference_id}/plan",
+    response_model=list[SectionPlanOut],
+)
+async def get_document_plan(
+    reference_id: uuid.UUID,
+    device_document_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """Phase 4: build (but do not apply) a section-by-section change plan
+    for generating a device-specific document from this reference document
+    and device document. Does not touch the reference .docx - see
+    services/document_diff_planner.py. Applying the plan to produce an
+    actual output document is a later step.
+    """
+    plans = await build_document_plan(db, reference_id, device_document_id)
+    if not plans:
+        raise HTTPException(status_code=404, detail="Reference document has no sections")
+    return [
+        SectionPlanOut(
+            section_id=p.section_id,
+            section_name=p.section_name,
+            changed=p.changed,
+            reason=p.reason,
+            new_paragraphs=p.new_paragraphs,
+            new_table_markdown=p.new_table_markdown,
+            best_similarity=p.best_similarity,
+        )
+        for p in plans
+    ]
 
 
 @rag_router.get("/reference/active", response_model=ReferenceOut | None)
