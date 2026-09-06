@@ -30,9 +30,11 @@ def _make_reference_docx() -> bytes:
 @pytest.fixture
 def _client():
     try:
+        from api.deps import get_current_active_user
         from app import app
         from core.database import AsyncSessionLocal, get_engine
         from fastapi.testclient import TestClient
+        from models.user import User
         from rag import retriever as rag_retriever
     except ModuleNotFoundError:
         pytest.skip("async app stack / TestClient unavailable")
@@ -58,9 +60,20 @@ def _client():
             pass
         loop.close()
 
-    with TestClient(app) as client:
-        with _Monkey(rag_retriever, "embed_text", _fake_embed):
-            yield client
+    # These endpoints require an authenticated admin/engineer user
+    # (require_role depends on get_current_active_user); there's no
+    # conftest.py or login flow wired up for tests yet, so override the
+    # dependency directly with a fake active admin user for the duration
+    # of this fixture, rather than skip auth-gated coverage entirely.
+    fake_user = User(role="admin", is_active=True)
+    app.dependency_overrides[get_current_active_user] = lambda: fake_user
+
+    try:
+        with TestClient(app) as client:
+            with _Monkey(rag_retriever, "embed_text", _fake_embed):
+                yield client
+    finally:
+        app.dependency_overrides.pop(get_current_active_user, None)
 
 
 class _Monkey:
