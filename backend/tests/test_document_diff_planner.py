@@ -101,6 +101,79 @@ def _seed(db_add, device_id, document_id, reference_id, section_sensor_id, ref_s
     return DeviceDocumentSection, DocumentTemplate, ref_content
 
 
+def test_extract_markdown_table_drops_separator_row():
+    from services.document_diff_planner import _extract_markdown_table
+
+    text = "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |"
+    rows = _extract_markdown_table(text)
+    assert rows == [["A", "B"], ["1", "2"], ["3", "4"]]
+
+
+def test_sanitize_table_reverts_unverifiable_cell_but_keeps_verifiable_one():
+    """Regression test for a real bug: the model filled an empty
+    'Indicator Light' cell with an inferred color (pattern-matched from
+    the row's priority) even though neither document stated it, while a
+    genuinely-unchanged cell with the same non-empty value should NOT be
+    flagged as a hallucination just because it isn't literally repeated in
+    the device excerpts word-for-word this time."""
+    from services.document_diff_planner import _sanitize_table_against_hallucination
+
+    original = (
+        "| No. | Priority | Condition | Indicator Light |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | High | Start button pressed | Color: Red |\n"
+        "| 2 | High | Over temperature |  |\n"
+        "| 4 | Medium | Interlock not connected | Color: Yellow |\n"
+    )
+    # the model filled row 2's empty cell with an invented color, and left
+    # everything else untouched
+    hallucinated = (
+        "| No. | Priority | Condition | Indicator Light |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | High | Start button pressed | Color: Red |\n"
+        "| 2 | High | Over temperature | Color: Red |\n"
+        "| 4 | Medium | Interlock not connected | Color: Yellow |\n"
+    )
+    device_excerpts = "Over temperature interrupts laser emission immediately."
+
+    sanitized, reverted = _sanitize_table_against_hallucination(
+        original, hallucinated, device_excerpts
+    )
+
+    assert reverted == 1
+    rows = [r.strip() for r in sanitized.splitlines()]
+    assert "| 2 | High | Over temperature |  |" in rows
+    # untouched cells (including the unchanged "Color: Red"/"Color: Yellow"
+    # that were already in the reference) are preserved, not flagged
+    assert "| 1 | High | Start button pressed | Color: Red |" in rows
+    assert "| 4 | Medium | Interlock not connected | Color: Yellow |" in rows
+
+
+def test_sanitize_table_accepts_change_traceable_to_device_excerpts():
+    from services.document_diff_planner import _sanitize_table_against_hallucination
+
+    original = "| Param | Value |\n| --- | --- |\n| Power | 5 W |\n"
+    updated = "| Param | Value |\n| --- | --- |\n| Power | 8 W |\n"
+    device_excerpts = "The laser supports up to 8 W peak power."
+
+    sanitized, reverted = _sanitize_table_against_hallucination(original, updated, device_excerpts)
+
+    assert reverted == 0
+    assert "8 W" in sanitized
+
+
+def test_sanitize_table_shape_mismatch_passes_through_unchanged():
+    from services.document_diff_planner import _sanitize_table_against_hallucination
+
+    original = "| A | B |\n| --- | --- |\n| 1 | 2 |\n"
+    restructured = "| A | B | C |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n"
+
+    sanitized, reverted = _sanitize_table_against_hallucination(original, restructured, "")
+
+    assert reverted == 0
+    assert sanitized == restructured
+
+
 def test_empty_section_skips_llm(_db_session):
     loop, session_factory = _db_session
     from models.template import DocumentTemplate, ReferenceDocument
@@ -251,6 +324,125 @@ def test_good_match_calls_llm_and_parses_plan(_db_session, monkeypatch):
         assert plan.new_paragraphs == ["Calibrate the sensor every 30 days per device spec."]
         assert plan.new_table_markdown is None
         assert plan.best_similarity is not None and plan.best_similarity > 0
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(
+                    delete(DocumentChunk).where(DocumentChunk.device_document_id == document_id)
+                )
+                await db.execute(
+                    delete(DeviceDocumentSection).where(
+                        DeviceDocumentSection.document_id == document_id
+                    )
+                )
+                await db.execute(delete(DeviceDocument).where(DeviceDocument.id == document_id))
+                await db.execute(delete(Device).where(Device.id == device_id))
+                await db.execute(
+                    delete(DocumentTemplate).where(DocumentTemplate.source_doc_id == reference_id)
+                )
+                await db.execute(
+                    delete(ReferenceDocument).where(ReferenceDocument.id == reference_id)
+                )
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
+
+
+def test_good_match_with_hallucinated_table_cell_gets_reverted(_db_session, monkeypatch):
+    """End-to-end: build_section_plan() itself applies the sanitizer, not
+    just the helper function in isolation."""
+    loop, session_factory = _db_session
+
+    from models.device import Device
+    from models.device_document import DeviceDocument, DeviceDocumentSection
+    from models.template import DocumentTemplate, ReferenceDocument
+    from rag import chunk_service
+    from services.document_diff_planner import build_section_plan
+    from sqlalchemy import delete
+    from models.document_chunk import DocumentChunk
+
+    monkeypatch.setattr(
+        chunk_service, "get_device_embedding_service", lambda: _FakeEmbeddingService()
+    )
+    monkeypatch.setattr(chunk_service, "bge_token_counter", lambda: (lambda t: len(t.split())))
+
+    device_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    section_id = uuid.uuid4()
+    reference_id = uuid.uuid4()
+    ref_section_id = uuid.uuid4()
+
+    ref_table = (
+        "| No. | Condition | Indicator Light |\n"
+        "| --- | --- | --- |\n"
+        "| 1 | Start pressed | Color: Red |\n"
+        "| 2 | Over temperature |  |\n"
+    )
+    # LLM invents a color for row 2 that neither document states
+    hallucinated_table = (
+        "| No. | Condition | Indicator Light |\n"
+        "| --- | --- | --- |\n"
+        "| 1 | Start pressed | Color: Red |\n"
+        "| 2 | Over temperature | Color: Red |\n"
+    )
+    llm_response = json.dumps(
+        {
+            "changed": True,
+            "reason": "Device document addresses the over-temperature condition.",
+            "new_paragraphs": None,
+            "new_table_markdown": hallucinated_table,
+        }
+    )
+    fake_llm = _FakeLLM(responses=[llm_response])
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(Device(id=device_id, name="Test Device", document_code="TST-6"))
+            db.add(
+                DeviceDocument(
+                    id=document_id, device_id=device_id, filename="d6.docx",
+                    storage_path="/tmp/d6.docx", file_size=1,
+                )
+            )
+            db.add(
+                ReferenceDocument(
+                    id=reference_id, filename="r6.docx", template_name="r6",
+                    embedding_model="BAAI/bge-base-en-v1.5", embedding_dimension=EMBED_DIM,
+                )
+            )
+            await db.flush()
+
+            db.add(
+                DeviceDocumentSection(
+                    id=section_id, document_id=document_id,
+                    section_name="Alarms", section_type="text",
+                    heading_level=1, section_order=1,
+                    content="Sensor calibration section. Over temperature interrupts laser emission immediately.",
+                    figure_refs=[],
+                )
+            )
+            ref_section = DocumentTemplate(
+                id=ref_section_id, template_name="r6", source_doc_id=reference_id,
+                section_name="Alarms Table", section_order=1,
+                content=ref_table,
+                embedding=_keyword_vector("sensor calibration " + ref_table),
+            )
+            db.add(ref_section)
+            await db.commit()
+
+            await chunk_service.generate_and_store_chunks(db, document_id)
+            await db.refresh(ref_section)
+
+            return await build_section_plan(db, ref_section, document_id, fake_llm)
+
+    try:
+        plan = loop.run_until_complete(_run())
+
+        assert plan.new_table_markdown is not None
+        assert "reverted to the reference value" in plan.reason
+        rows = [r.strip() for r in plan.new_table_markdown.splitlines()]
+        assert "| 2 | Over temperature |  |" in rows
+        assert "| 1 | Start pressed | Color: Red |" in rows
     finally:
         async def _cleanup():
             async with session_factory() as db:
