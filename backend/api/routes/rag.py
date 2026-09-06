@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from models.template import DocumentTemplate, ReferenceDocument
 from pydantic import BaseModel
 from rag.extractor import extract_docx
-from rag.reference_bge_embedding import find_matching_device_chunks, generate_bge_embeddings
+from rag.reference_bge_embedding import find_matching_device_chunks
 from rag.retriever import (
     delete_reference,
     get_active_reference,
@@ -123,33 +123,6 @@ async def list_sections(
     return [SectionOut.from_row(r) for r in result.scalars().all()]
 
 
-class GenerateBgeEmbeddingsResponse(BaseModel):
-    reference_id: uuid.UUID
-    section_count: int
-
-
-@rag_router.post(
-    "/reference/{reference_id}/bge-embeddings",
-    response_model=GenerateBgeEmbeddingsResponse,
-)
-async def generate_reference_bge_embeddings(
-    reference_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    _=Depends(require_role("admin", "engineer")),
-):
-    """Phase 4 prerequisite: (re)compute bge-base-en-v1.5 embeddings for this
-    reference document's sections, so they're in the same vector space as
-    device_document chunks and can be matched against them. Does not affect
-    the existing MiniLM-based `embedding` column or its retrieval path.
-    """
-    count = await generate_bge_embeddings(db, reference_id)
-    if count == 0:
-        raise HTTPException(
-            status_code=404, detail="Reference document has no sections to embed"
-        )
-    return GenerateBgeEmbeddingsResponse(reference_id=reference_id, section_count=count)
-
-
 class MatchingChunkOut(BaseModel):
     chunk_id: int
     chunk_index: int
@@ -180,9 +153,9 @@ async def get_matching_device_chunks(
     _=Depends(get_current_active_user),
 ):
     """Phase 4: the k device-document chunks most semantically similar to
-    one reference section, within a specific device document. Returns []
-    if the reference section has no bge_embedding yet - call
-    POST /rag/reference/{reference_id}/bge-embeddings first.
+    one reference section, within a specific device document. Both are
+    embedded with bge-base-en-v1.5 - a reference section's embedding is
+    already populated at upload time, no separate step needed.
     """
     matches = await find_matching_device_chunks(db, section_id, device_document_id, k=k)
     return [MatchingChunkOut.from_dict(m) for m in matches]

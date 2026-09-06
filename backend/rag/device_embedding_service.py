@@ -4,11 +4,14 @@ Embedding service for device-document RAG (Phase 3).
 Wraps BAAI/bge-base-en-v1.5 via sentence-transformers. Automatically
 uses GPU (CUDA) if available, otherwise falls back to CPU.
 
-This is intentionally separate from rag/embeddings.py, which serves the
-reference-document/template pipeline (MiniLM-L6-v2, 384-dim). The two
-pipelines embed conceptually different content (device manual knowledge
-vs. output-document structure/style) and must not share a model, table,
-or embedding space.
+rag/embeddings.py (the reference-document/template pipeline) now delegates
+to this same singleton rather than loading a second model - reference
+sections and device chunks are embedded with the same model into the same
+vector space on purpose, so a Phase 4 agent can compare them directly (see
+rag/reference_bge_embedding.py). There used to be a separate MiniLM-L6-v2
+(384-dim) pipeline for reference documents; it was consolidated into this
+one (migration 0010_consolidate_reference_embedding) once cross-document
+matching required a shared space anyway.
 """
 import logging
 

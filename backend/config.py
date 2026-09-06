@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     max_device_document_upload_bytes: int = 50 * 1024 * 1024
 
     # --- Embedding ---
-    embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embed_dimension: int = 384
+    embed_model: str = "BAAI/bge-base-en-v1.5"
+    embed_dimension: int = 768
 
     # --- Auth ---
     secret_key: SecretStr = SecretStr("change-me-in-production")

@@ -7,7 +7,7 @@ import io
 import pytest
 from docx import Document as DocxDocument
 
-EMBED_DIM = 384
+EMBED_DIM = 768
 
 
 async def _fake_embed(text: str) -> list[float]:

@@ -1,10 +1,12 @@
-"""Integration test for rag/reference_bge_embedding.py.
+"""Integration test for rag/reference_bge_embedding.find_matching_device_chunks.
 
 Runs against a real Postgres connection (skipped if unavailable), same
-pattern as tests/test_rag.py and tests/test_chunk_service.py. The embedding
-model is faked with a small deterministic keyword-vector so cosine
-similarity ordering is meaningful and assertable without loading the real
-bge-base-en-v1.5 model (torch).
+pattern as tests/test_rag.py and tests/test_chunk_service.py. Since
+document_templates.embedding and document_chunks.embedding are now both
+bge-base-en-v1.5 (see migration 0010_consolidate_reference_embedding), this
+test sets deterministic keyword-vectors directly on the rows rather than
+calling the real embedding model (no torch needed) - it's testing the
+cosine-search/ranking logic, not embedding quality.
 """
 from __future__ import annotations
 
@@ -17,11 +19,6 @@ EMBED_DIM = 768
 _KEYWORDS = ["sensor", "calibration", "wiring", "interface", "color", "button"]
 
 
-class _FakeEmbeddingService:
-    def embed_documents(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
-        return [_keyword_vector(t) for t in texts]
-
-
 def _keyword_vector(text: str) -> list[float]:
     lowered = text.lower()
     vec = [0.0] * EMBED_DIM
@@ -29,6 +26,11 @@ def _keyword_vector(text: str) -> list[float]:
         if kw in lowered:
             vec[i] = 1.0
     return vec
+
+
+class _FakeEmbeddingService:
+    def embed_documents(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
+        return [_keyword_vector(t) for t in texts]
 
 
 @pytest.fixture
@@ -62,7 +64,7 @@ def _db_session():
         loop.close()
 
 
-def test_generate_bge_embeddings_and_find_matching_chunks(_db_session, monkeypatch):
+def test_find_matching_device_chunks_ranks_by_similarity(_db_session, monkeypatch):
     loop, session_factory = _db_session
 
     from models.device import Device
@@ -75,9 +77,6 @@ def test_generate_bge_embeddings_and_find_matching_chunks(_db_session, monkeypat
     fake_service = _FakeEmbeddingService()
     monkeypatch.setattr(chunk_service, "get_device_embedding_service", lambda: fake_service)
     monkeypatch.setattr(chunk_service, "bge_token_counter", lambda: (lambda t: len(t.split())))
-    monkeypatch.setattr(
-        reference_bge_embedding, "get_device_embedding_service", lambda: fake_service
-    )
 
     device_id = uuid.uuid4()
     document_id = uuid.uuid4()
@@ -88,6 +87,10 @@ def test_generate_bge_embeddings_and_find_matching_chunks(_db_session, monkeypat
 
     async def _run():
         async with session_factory() as db:
+            # parents first, flushed, so children's FKs always resolve
+            # regardless of unit-of-work insert ordering across mappers
+            # that have no ORM relationship() between them (Device<->
+            # DeviceDocument do; ReferenceDocument<->DocumentTemplate don't).
             db.add(Device(id=device_id, name="Test Device", document_code="TST-2"))
             db.add(
                 DeviceDocument(
@@ -98,6 +101,17 @@ def test_generate_bge_embeddings_and_find_matching_chunks(_db_session, monkeypat
                     file_size=1,
                 )
             )
+            db.add(
+                ReferenceDocument(
+                    id=reference_id,
+                    filename="ref.docx",
+                    template_name="ref",
+                    embedding_model="BAAI/bge-base-en-v1.5",
+                    embedding_dimension=EMBED_DIM,
+                )
+            )
+            await db.flush()
+
             # one device section clearly about sensor wiring/calibration...
             db.add(
                 DeviceDocumentSection(
@@ -124,15 +138,7 @@ def test_generate_bge_embeddings_and_find_matching_chunks(_db_session, monkeypat
                     figure_refs=[],
                 )
             )
-            db.add(
-                ReferenceDocument(
-                    id=reference_id,
-                    filename="ref.docx",
-                    template_name="ref",
-                    embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-                    embedding_dimension=384,
-                )
-            )
+            ref_content = "How to calibrate the sensor after wiring it up."
             db.add(
                 DocumentTemplate(
                     id=ref_section_id,
@@ -140,27 +146,23 @@ def test_generate_bge_embeddings_and_find_matching_chunks(_db_session, monkeypat
                     source_doc_id=reference_id,
                     section_name="Sensor Calibration Procedure",
                     section_order=1,
-                    content="How to calibrate the sensor after wiring it up.",
+                    content=ref_content,
+                    embedding=_keyword_vector(ref_content),
                 )
             )
             await db.commit()
 
             chunk_count = await chunk_service.generate_and_store_chunks(db, document_id)
-            embedded_count = await reference_bge_embedding.generate_bge_embeddings(
-                db, reference_id
-            )
 
             matches = await reference_bge_embedding.find_matching_device_chunks(
                 db, ref_section_id, document_id, k=5
             )
-            return chunk_count, embedded_count, matches
+            return chunk_count, matches
 
     try:
-        chunk_count, embedded_count, matches = loop.run_until_complete(_run())
+        chunk_count, matches = loop.run_until_complete(_run())
 
         assert chunk_count == 2  # one chunk per device section
-        assert embedded_count == 1  # one reference section
-
         assert len(matches) == 2
         # the sensor/calibration chunk should rank first (highest similarity)
         assert "sensor" in matches[0]["chunk_text"].lower()
