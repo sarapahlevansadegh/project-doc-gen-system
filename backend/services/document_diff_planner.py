@@ -31,7 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # guess from a weak/irrelevant match.
 DEFAULT_SIMILARITY_THRESHOLD = 0.5
 
-_PROMPT_TEMPLATE = """You are helping generate a device-specific technical document from a fixed company reference template. The reference document's structure, headings, and wording must NOT change - only device-specific facts, numbers, and table values may be updated, and only when the device document actually provides a specific value for something the reference states generically or with a different device's data.
+_PROMPT_TEMPLATE = """You are helping generate a device-specific technical document from a fixed company reference template. The reference document's structure, headings, and wording must NOT change - only device-specific facts, numbers, and table values may be updated, and only when the device document actually provides a different/specific value for something the reference states generically or with a different device's data.
+
+CRITICAL: Only replace a value when the device document excerpts literally state that specific value. Never infer, calculate, or guess a replacement value (e.g. do not fill an empty cell by pattern-matching other rows, do not assume a color/label/number because it "seems right" for that category). An empty or generic cell/field that the device document doesn't explicitly address must be copied through UNCHANGED, exactly as it appears in the reference - never leave it as-is by omission and never quietly fill it in.
 
 REFERENCE SECTION (do not change wording/structure unless a specific fact must be updated):
 ---
@@ -53,7 +55,7 @@ Respond with ONLY a JSON object, no markdown code fences, no commentary before o
   "new_table_markdown": "| Col1 | Col2 |\\n| --- | --- |\\n| val | val |" or null
 }}
 
-"new_paragraphs", if not null, must be the FULL replacement text for the section's paragraphs (same number of paragraphs as the reference, same general wording), with only the device-specific values swapped in - not a diff, not a summary. "new_table_markdown", if not null, must be the FULL replacement Markdown table (same row/column structure as the reference's table, header included) with only cell values updated - only set this if the reference section actually contains a table."""
+"new_paragraphs", if not null, must be the FULL replacement text for the section's paragraphs (same number of paragraphs as the reference, same general wording), with only the device-specific values swapped in - not a diff, not a summary. "new_table_markdown", if not null, must be the FULL replacement Markdown table (same row/column structure as the reference's table, same row order, header included) with ONLY the specific cells the device document actually addresses changed - every other cell, including empty ones, copied through byte-for-byte identical to the reference table."""
 
 
 @dataclass

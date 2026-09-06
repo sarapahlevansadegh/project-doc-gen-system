@@ -10,7 +10,11 @@ from importlib.metadata import version as _pkg_version
 from api.routes import api_router
 from config import settings
 from core.database import get_engine
-from core.middleware import RequestIDMiddleware, RequestLoggingMiddleware
+from core.middleware import (
+    ExplicitJSONCharsetMiddleware,
+    RequestIDMiddleware,
+    RequestLoggingMiddleware,
+)
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -72,6 +76,7 @@ app.add_middleware(
 )
 app.add_middleware(RequestLoggingMiddleware, logger=logger)
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(ExplicitJSONCharsetMiddleware)
 
 # --- Rate limiting (optional) ---
 if settings.rate_limit_enabled:
