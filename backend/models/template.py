@@ -63,6 +63,11 @@ class DocumentTemplate(Base):
     embedding: Mapped[list] = mapped_column(Vector(384), nullable=True)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=True)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=True)
+    # Second embedding, bge-base-en-v1.5 (768-dim) - same model/space as
+    # document_chunks.embedding, used only for Phase 4 reference<->device
+    # cross-corpus matching. The MiniLM `embedding` column above is
+    # untouched and keeps serving rag/retriever.py's existing retrieval.
+    bge_embedding: Mapped[list] = mapped_column(Vector(768), nullable=True)
     meta_data: Mapped[dict] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

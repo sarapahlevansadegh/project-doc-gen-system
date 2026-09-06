@@ -7,10 +7,11 @@ from pathlib import Path
 
 from api.deps import get_current_active_user, get_db, require_role
 from config import settings
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from models.template import DocumentTemplate, ReferenceDocument
 from pydantic import BaseModel
 from rag.extractor import extract_docx
+from rag.reference_bge_embedding import find_matching_device_chunks, generate_bge_embeddings
 from rag.retriever import (
     delete_reference,
     get_active_reference,
@@ -120,6 +121,71 @@ async def list_sections(
         .order_by(DocumentTemplate.section_order)
     )
     return [SectionOut.from_row(r) for r in result.scalars().all()]
+
+
+class GenerateBgeEmbeddingsResponse(BaseModel):
+    reference_id: uuid.UUID
+    section_count: int
+
+
+@rag_router.post(
+    "/reference/{reference_id}/bge-embeddings",
+    response_model=GenerateBgeEmbeddingsResponse,
+)
+async def generate_reference_bge_embeddings(
+    reference_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """Phase 4 prerequisite: (re)compute bge-base-en-v1.5 embeddings for this
+    reference document's sections, so they're in the same vector space as
+    device_document chunks and can be matched against them. Does not affect
+    the existing MiniLM-based `embedding` column or its retrieval path.
+    """
+    count = await generate_bge_embeddings(db, reference_id)
+    if count == 0:
+        raise HTTPException(
+            status_code=404, detail="Reference document has no sections to embed"
+        )
+    return GenerateBgeEmbeddingsResponse(reference_id=reference_id, section_count=count)
+
+
+class MatchingChunkOut(BaseModel):
+    chunk_id: int
+    chunk_index: int
+    content_preview: str
+    similarity: float
+    figures: list[dict]
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MatchingChunkOut":
+        return cls(
+            chunk_id=d["chunk_id"],
+            chunk_index=d["chunk_index"],
+            content_preview=d["chunk_text"][:200],
+            similarity=d["similarity"],
+            figures=d["figure_refs"] or [],
+        )
+
+
+@rag_router.get(
+    "/reference/sections/{section_id}/matches",
+    response_model=list[MatchingChunkOut],
+)
+async def get_matching_device_chunks(
+    section_id: uuid.UUID,
+    device_document_id: uuid.UUID = Query(...),
+    k: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_active_user),
+):
+    """Phase 4: the k device-document chunks most semantically similar to
+    one reference section, within a specific device document. Returns []
+    if the reference section has no bge_embedding yet - call
+    POST /rag/reference/{reference_id}/bge-embeddings first.
+    """
+    matches = await find_matching_device_chunks(db, section_id, device_document_id, k=k)
+    return [MatchingChunkOut.from_dict(m) for m in matches]
 
 
 @rag_router.get("/reference/active", response_model=ReferenceOut | None)
