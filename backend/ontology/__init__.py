@@ -7,6 +7,7 @@ currently pure schema + validation logic.
 """
 from ontology.schema import ENTITY_TYPES, ONTOLOGY, allowed_relations
 from ontology.validator import Entity, Triple, ValidationResult, validate_entity, validate_triple
+from ontology.extractor import extract_entities
 
 __all__ = [
     "ENTITY_TYPES",
@@ -17,4 +18,5 @@ __all__ = [
     "ValidationResult",
     "validate_entity",
     "validate_triple",
+    "extract_entities",
 ]
