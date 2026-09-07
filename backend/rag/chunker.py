@@ -244,11 +244,24 @@ def chunk_section(
 
     breadcrumb = f"{parent_section} > {section_name}" if parent_section else section_name
 
+    # The breadcrumb is prepended to every chunk's final text (below), but
+    # _pack_blocks() only sees the body blocks - without reserving its
+    # budget here, a section with a long breadcrumb (e.g. a deep heading
+    # path) could pack blocks right up to max_tokens and then exceed it
+    # once the breadcrumb is added on top. Seen in practice: a chunk came
+    # out to 519 tokens against a 512 max, which triggered a real crash in
+    # the embedding model's CPU inference on the oversized sequence (see
+    # docker-compose.yml's OMP_NUM_THREADS note) - so this isn't just a
+    # cosmetic over-budget, it fed an input the embedding step couldn't
+    # safely handle.
+    breadcrumb_tokens = token_counter(breadcrumb + "\n\n")
+    body_max_tokens = max(1, max_tokens - breadcrumb_tokens)
+
     blocks = _split_into_blocks(content)
     if not blocks:
         return []
 
-    groups = _pack_blocks(blocks, max_tokens, overlap_tokens, token_counter)
+    groups = _pack_blocks(blocks, body_max_tokens, overlap_tokens, token_counter)
 
     chunks: list[Chunk] = []
     for i, group in enumerate(groups):

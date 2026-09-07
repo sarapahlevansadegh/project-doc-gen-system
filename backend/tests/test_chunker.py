@@ -124,3 +124,21 @@ def test_oversized_single_paragraph_falls_back_to_sentence_split():
     assert len(chunks) > 1
     for c in chunks:
         assert c.token_count <= 20 + 10
+
+
+def test_long_breadcrumb_budget_is_reserved_so_final_text_stays_under_max_tokens():
+    """Regression test: a real crash was traced to a chunk coming out to
+    519 tokens against a 512 max, because the breadcrumb prefix wasn't
+    counted against the packing budget - only the body blocks were, so a
+    section with a long parent_section path could pack right up to
+    max_tokens and then exceed it once the breadcrumb was added on top."""
+    long_parent = "A Fairly Long Parent Heading Path That Adds Up To A Dozen Or So Tokens On Its Own"
+    # body sized so it would have filled exactly max_tokens if the
+    # breadcrumb weren't reserved for
+    body = " ".join(f"word{i}" for i in range(60))
+
+    chunks = chunk_section(long_parent, None, body, _word_counter, max_tokens=64)
+
+    assert len(chunks) >= 1
+    for c in chunks:
+        assert c.token_count <= 64, f"chunk exceeded max_tokens: {c.token_count}"

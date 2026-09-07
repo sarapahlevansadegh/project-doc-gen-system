@@ -26,6 +26,19 @@ services:
 
     environment:
 
+      # PyTorch CPU threading: a known class of "Illegal instruction (core
+      # dumped)" crashes happens when PyTorch's multi-threaded BLAS/oneDNN
+      # kernels pick a code path the host CPU doesn't actually support
+      # (seen here: crashed processing a slightly-over-512-token chunk
+      # during bge-base-en-v1.5 embedding, but not on shorter ones -
+      # consistent with a threaded-kernel-selection issue rather than a
+      # blanket incompatibility). Pinning to a single thread is the
+      # standard mitigation for this failure signature in containerized
+      # CPU inference.
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
+
       # Database
       - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://docgen:docgen_pass_123@db:5432/docgen}
       - DB_PASSWORD=${DB_PASSWORD:-docgen_pass_123}

@@ -32,6 +32,14 @@ class DeviceEmbeddingService:
 
     def __init__(self, model_name: str = DEFAULT_MODEL_NAME):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.device == "cpu":
+            # Belt-and-suspenders alongside the OMP_NUM_THREADS/MKL_NUM_THREADS
+            # env vars in docker-compose.yml: those aren't always honored by
+            # every BLAS backend torch might link against, and this crashed
+            # in practice ("Illegal instruction (core dumped)") on a
+            # slightly-over-512-token chunk during CPU inference - single-
+            # threaded is the standard mitigation for that failure class.
+            torch.set_num_threads(1)
         logger.info(
             "Loading device embedding model '%s' on device '%s'",
             model_name,
