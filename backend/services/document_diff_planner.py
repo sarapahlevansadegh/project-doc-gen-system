@@ -114,27 +114,53 @@ def _rebuild_markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+_MIN_ANCHOR_LEN = 4
+
+
 def _sanitize_table_against_hallucination(
-    reference_content: str, new_table_markdown: str, device_excerpts_text: str
+    reference_content: str, new_table_markdown: str, matches: list[dict]
 ) -> tuple[str, int]:
-    """Revert any changed table cell whose new value doesn't literally
-    appear anywhere in the device excerpts.
+    """Revert any changed table cell that isn't verifiably backed by the
+    device document, checked per-row rather than against the whole device
+    excerpts blob at once.
 
-    Prompt wording alone ("never infer/guess") is not a reliable enough
-    guardrail: models will still pattern-complete a plausible-looking
-    value for an empty cell even when explicitly told not to (seen in
-    practice - empty "Indicator Light" cells filled in by inferring a
-    color from the row's priority level, with nothing in either document
-    actually stating that color, even after the prompt was tightened). For
-    a medical-device document, an unverifiable fabricated value is worse
-    than a missed real one, so this check is mechanical, not another LLM
-    instruction to hope is followed.
+    Three guardrail attempts, three real failure modes found by testing
+    against the actual reference + device documents:
 
-    Returns (sanitized_markdown, reverted_cell_count). If the table shapes
-    don't line up (row/column count mismatch - the model restructured the
-    table instead of just editing values in place), returns the new table
-    unchanged; that's a case that still needs human review, not something
-    this cell-level check can safely correct on its own.
+    1. Prompt wording alone ("never infer/guess") was not reliable: the
+       model filled an empty "Indicator Light" cell with an inferred color
+       pattern-matched from the row's priority level, with nothing in
+       either document stating it.
+    2. A flat "does the new value appear ANYWHERE in the device excerpts"
+       check was too permissive: a generic value like "Color: Red" that's
+       real for row 1 was accepted as "verified" for a different row,
+       because the check had no notion of *which row* it was checking.
+    3. Checking "does the anchor and the new value both appear in the SAME
+       chunk" still wasn't precise enough: rag/chunker.py keeps a whole
+       table as one atomic chunk (deliberately, to never split a table -
+       see chunker.py), so when the device document contains its own
+       near-identical table, that entire table (every row) is one chunk.
+       The row-2 anchor and row-1's real "Color: Red" both live in that
+       same chunk, so they still "co-occurred" despite being unrelated
+       rows.
+
+    Fix: when a device excerpt chunk itself contains a table, parse it and
+    compare row-to-row, column-to-column - find the device table row whose
+    cells contain this reference row's anchor text, then only accept a
+    cell change if that SAME COLUMN of the matched device row actually
+    supports it. This is what catches the row-2 case: the device
+    document's own row 2 also has an empty Indicator Light cell, so
+    column-aligned comparison correctly finds no support and reverts,
+    where flat text search kept finding row 1's unrelated "Color: Red"
+    anywhere in the chunk. Falls back to the weaker anchor+chunk
+    co-occurrence check only when no device table row matches this
+    reference row at all (e.g. the device document only discusses it in
+    prose, not a table).
+
+    Returns (sanitized_markdown, reverted_cell_count). If the reference
+    and new table shapes don't line up (row/column count mismatch),
+    returns the new table unchanged; that's a case needing human review,
+    not something this cell-level check can safely correct on its own.
     """
     orig_rows = _extract_markdown_table(reference_content)
     new_rows = _extract_markdown_table(new_table_markdown)
@@ -145,17 +171,65 @@ def _sanitize_table_against_hallucination(
     ):
         return new_table_markdown, 0
 
-    device_lower = device_excerpts_text.lower()
+    device_tables = [
+        t for t in (_extract_markdown_table(m["chunk_text"]) for m in matches) if t
+    ]
+    chunk_texts_lower = [m["chunk_text"].lower() for m in matches]
+
     reverted = 0
     sanitized_rows: list[list[str]] = []
     for orig_row, new_row in zip(orig_rows, new_rows):
+        # the row's own anchor: its longest original cell, i.e. the most
+        # specific/identifying text for *this* row (typically the
+        # condition/description column) - bare numbers or "High"/"Medium"
+        # aren't distinctive enough to localize a row.
+        anchor = max(orig_row, key=len).strip().lower()
+        anchor_ok = len(anchor) >= _MIN_ANCHOR_LEN
+
+        matched_device_row: list[str] | None = None
+        if anchor_ok:
+            for device_table in device_tables:
+                for device_row in device_table:
+                    if any(anchor in (cell or "").lower() for cell in device_row):
+                        matched_device_row = device_row
+                        break
+                if matched_device_row is not None:
+                    break
+
+        anchor_chunks = (
+            [text for text in chunk_texts_lower if anchor in text] if anchor_ok else []
+        )
+
         out_row = []
-        for orig_cell, new_cell in zip(orig_row, new_row):
-            if new_cell != orig_cell and new_cell and new_cell.lower() not in device_lower:
+        for col_idx, (orig_cell, new_cell) in enumerate(zip(orig_row, new_row)):
+            if new_cell == orig_cell or not new_cell:
+                out_row.append(new_cell)
+                continue
+
+            new_cell_lower = new_cell.lower()
+            if matched_device_row is not None:
+                # precise: does this matched device row's SAME column
+                # actually contain the proposed value? A matched row
+                # takes priority over the looser chunk-text fallback below
+                # even when it doesn't support the change - the device
+                # document does discuss this row, and if its own value
+                # disagrees (or is blank), that's stronger evidence than a
+                # coincidental text match elsewhere.
+                device_cell = (
+                    device_row_cell.lower()
+                    if col_idx < len(matched_device_row)
+                    and (device_row_cell := matched_device_row[col_idx])
+                    else ""
+                )
+                verified = bool(device_cell) and new_cell_lower in device_cell
+            else:
+                verified = any(new_cell_lower in chunk for chunk in anchor_chunks)
+
+            if verified:
+                out_row.append(new_cell)
+            else:
                 out_row.append(orig_cell)
                 reverted += 1
-            else:
-                out_row.append(new_cell)
         sanitized_rows.append(out_row)
 
     return _rebuild_markdown_table(sanitized_rows), reverted
@@ -209,9 +283,8 @@ async def build_section_plan(
     reason = parsed.get("reason", "")
     new_table_markdown = parsed.get("new_table_markdown")
     if new_table_markdown:
-        device_excerpts_text = _format_device_excerpts(matches)
         new_table_markdown, reverted = _sanitize_table_against_hallucination(
-            section.content, new_table_markdown, device_excerpts_text
+            section.content, new_table_markdown, matches
         )
         if reverted:
             reason += (

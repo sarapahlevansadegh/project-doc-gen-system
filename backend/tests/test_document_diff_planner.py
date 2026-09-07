@@ -110,41 +110,51 @@ def test_extract_markdown_table_drops_separator_row():
 
 
 def test_sanitize_table_reverts_unverifiable_cell_but_keeps_verifiable_one():
-    """Regression test for a real bug: the model filled an empty
-    'Indicator Light' cell with an inferred color (pattern-matched from
-    the row's priority) even though neither document stated it, while a
-    genuinely-unchanged cell with the same non-empty value should NOT be
-    flagged as a hallucination just because it isn't literally repeated in
-    the device excerpts word-for-word this time."""
+    """Regression test for the real bug found in manual testing: the
+    device document contains its own near-identical table (same rows,
+    same blank Indicator Light cells for the same conditions). A flat
+    'does this value appear anywhere in the device excerpts' check would
+    wrongly accept row 1's real 'Color: Red' as 'evidence' for row 2,
+    since both rows live in the same atomic table chunk. Row-to-row,
+    column-to-column comparison against the device's own table should
+    correctly find that the device's row 2 ALSO has a blank Indicator
+    Light cell, and revert."""
     from services.document_diff_planner import _sanitize_table_against_hallucination
 
     original = (
         "| No. | Priority | Condition | Indicator Light |\n"
         "| --- | --- | --- | --- |\n"
         "| 1 | High | Start button pressed | Color: Red |\n"
-        "| 2 | High | Over temperature |  |\n"
+        "| 2 | High | Laser module over temperature |  |\n"
         "| 4 | Medium | Interlock not connected | Color: Yellow |\n"
     )
-    # the model filled row 2's empty cell with an invented color, and left
+    # the model filled row 2's empty cell with row 1's color, and left
     # everything else untouched
     hallucinated = (
         "| No. | Priority | Condition | Indicator Light |\n"
         "| --- | --- | --- | --- |\n"
         "| 1 | High | Start button pressed | Color: Red |\n"
-        "| 2 | High | Over temperature | Color: Red |\n"
+        "| 2 | High | Laser module over temperature | Color: Red |\n"
         "| 4 | Medium | Interlock not connected | Color: Yellow |\n"
     )
-    device_excerpts = "Over temperature interrupts laser emission immediately."
-
-    sanitized, reverted = _sanitize_table_against_hallucination(
-        original, hallucinated, device_excerpts
+    # the device document's OWN near-identical table - same blank cell for
+    # row 2, retrieved as one atomic chunk (tables are never split - see
+    # rag/chunker.py)
+    device_table_chunk = (
+        "Errors and Warnings > Alarms\n\n"
+        "| No. | Priority | Condition | Indicator Light |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | High | Start button pressed | Color: Red |\n"
+        "| 2 | High | Laser module over temperature |  |\n"
+        "| 4 | Medium | Interlock not connected | Color: Yellow |\n"
     )
+    matches = [{"chunk_text": device_table_chunk, "similarity": 0.9}]
+
+    sanitized, reverted = _sanitize_table_against_hallucination(original, hallucinated, matches)
 
     assert reverted == 1
     rows = [r.strip() for r in sanitized.splitlines()]
-    assert "| 2 | High | Over temperature |  |" in rows
-    # untouched cells (including the unchanged "Color: Red"/"Color: Yellow"
-    # that were already in the reference) are preserved, not flagged
+    assert "| 2 | High | Laser module over temperature |  |" in rows
     assert "| 1 | High | Start button pressed | Color: Red |" in rows
     assert "| 4 | Medium | Interlock not connected | Color: Yellow |" in rows
 
@@ -154,12 +164,36 @@ def test_sanitize_table_accepts_change_traceable_to_device_excerpts():
 
     original = "| Param | Value |\n| --- | --- |\n| Power | 5 W |\n"
     updated = "| Param | Value |\n| --- | --- |\n| Power | 8 W |\n"
-    device_excerpts = "The laser supports up to 8 W peak power."
+    matches = [{"chunk_text": "The laser supports up to 8 W peak power.", "similarity": 0.8}]
 
-    sanitized, reverted = _sanitize_table_against_hallucination(original, updated, device_excerpts)
+    sanitized, reverted = _sanitize_table_against_hallucination(original, updated, matches)
 
     assert reverted == 0
     assert "8 W" in sanitized
+
+
+def test_sanitize_table_prefers_device_table_row_over_loose_chunk_match():
+    """When a device table row DOES match this reference row but its own
+    value for the changed column disagrees, that should win over a
+    coincidental substring match elsewhere in the same chunk's raw text."""
+    from services.document_diff_planner import _sanitize_table_against_hallucination
+
+    original = "| Condition | Value |\n| --- | --- |\n| Laser module over temperature | 35 C |\n"
+    hallucinated = (
+        "| Condition | Value |\n| --- | --- |\n| Laser module over temperature | 40 C |\n"
+    )
+    # the device's own table row says 35 C (unchanged), even though the
+    # string "40 C" happens to appear elsewhere in the same chunk's prose
+    device_chunk = (
+        "Spec notes: values above 40 C are out of range for other components.\n\n"
+        "| Condition | Value |\n| --- | --- |\n| Laser module over temperature | 35 C |\n"
+    )
+    matches = [{"chunk_text": device_chunk, "similarity": 0.85}]
+
+    sanitized, reverted = _sanitize_table_against_hallucination(original, hallucinated, matches)
+
+    assert reverted == 1
+    assert "| Laser module over temperature | 35 C |" in sanitized
 
 
 def test_sanitize_table_shape_mismatch_passes_through_unchanged():
@@ -168,7 +202,7 @@ def test_sanitize_table_shape_mismatch_passes_through_unchanged():
     original = "| A | B |\n| --- | --- |\n| 1 | 2 |\n"
     restructured = "| A | B | C |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n"
 
-    sanitized, reverted = _sanitize_table_against_hallucination(original, restructured, "")
+    sanitized, reverted = _sanitize_table_against_hallucination(original, restructured, [])
 
     assert reverted == 0
     assert sanitized == restructured
