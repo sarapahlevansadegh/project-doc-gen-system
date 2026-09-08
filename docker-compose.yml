@@ -101,7 +101,7 @@ services:
       - ./reference_templates:/app/reference_templates
       - ./device_documents:/app/device_documents
       - huggingface_cache:/root/.cache/huggingface
-      - ./backend/db/migrations:/app/backend/db/migrations
+      - ./backend:/app/backend
 
 
     depends_on:
