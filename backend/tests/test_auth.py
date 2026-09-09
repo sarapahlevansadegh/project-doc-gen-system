@@ -47,7 +47,10 @@ async def test_register_creates_user(client):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["email"] == payload["email"]
-    assert body["role"] == "viewer"
+    
+    # First user in an empty DB always becomes admin (bootstrap logic in
+    # api/routes/auth.py's register()), regardless of the requested role.
+    assert body["role"] == "admin"
     assert "id" in body
 
 

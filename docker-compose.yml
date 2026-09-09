@@ -102,6 +102,7 @@ services:
       - ./device_documents:/app/device_documents
       - huggingface_cache:/root/.cache/huggingface
       - ./backend:/app/backend
+      - ./pyproject.toml:/app/pyproject.toml
 
 
     depends_on:
