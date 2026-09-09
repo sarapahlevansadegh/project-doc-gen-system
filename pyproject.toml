@@ -3,7 +3,7 @@ name = "doc-gen-system"
 version = "0.1.0"
 description = "AI document generation system"
 readme = "README.md"
-requires-python = ">=3.11.9"
+requires-python = ">=3.11.9,<3.12"
 
 dependencies = [
     "alembic>=1.18.4",
@@ -52,6 +52,11 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'linux'",
+]
 
 
 [tool.pytest.ini_options]
@@ -133,4 +138,10 @@ exclude = [
     "backend/db/migrations/versions/",
     "backend/tests/",
     ".venv/",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
