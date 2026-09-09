@@ -103,6 +103,7 @@ services:
       - huggingface_cache:/root/.cache/huggingface
       - ./backend:/app/backend
       - ./pyproject.toml:/app/pyproject.toml
+      - ./uv.lock:/app/uv.lock
 
 
     depends_on:
