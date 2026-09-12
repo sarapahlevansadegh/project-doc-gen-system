@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from rag.chunk_service import generate_and_store_chunks
 from schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
 from services import device_document_service, device_service
+from services.ontology_extraction_service import extract_and_store_ontology
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +104,14 @@ class GenerateChunksResponse(BaseModel):
     chunk_count: int
 
 
+class GenerateOntologyResponse(BaseModel):
+    document_id: uuid.UUID
+    device_id: uuid.UUID
+    chunks_processed: int
+    entities_upserted: int
+    relationships_upserted: int
+
+
 @devices_router.post("", response_model=DeviceOut, status_code=201)
 async def create_device(
     payload: DeviceCreate,
@@ -188,6 +197,42 @@ async def generate_device_document_chunks(
 
     chunk_count = await generate_and_store_chunks(db, document_id)
     return GenerateChunksResponse(document_id=document_id, chunk_count=chunk_count)
+
+
+@devices_router.post(
+    "/documents/{document_id}/ontology", response_model=GenerateOntologyResponse
+)
+async def generate_device_document_ontology(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """Extract entities + relationships (Phase 3.5) from a device
+    document's already-generated chunks and persist them into that
+    device's ontology graph.
+
+    A separate, explicit step from chunk generation, same reasoning as
+    that endpoint: this is at least one LLM call per chunk (two if it
+    contains a relationship), so callers re-trigger it independently
+    rather than it running automatically on chunk generation.
+    """
+    chunks_exist = await db.execute(
+        select(DocumentChunk.id).where(DocumentChunk.device_document_id == document_id)
+    )
+    if chunks_exist.first() is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No chunks found for this document (generate chunks first)",
+        )
+
+    result = await extract_and_store_ontology(db, document_id)
+    return GenerateOntologyResponse(
+        document_id=result.document_id,
+        device_id=result.device_id,
+        chunks_processed=result.chunks_processed,
+        entities_upserted=result.entities_upserted,
+        relationships_upserted=result.relationships_upserted,
+    )
 
 
 @devices_router.get(
