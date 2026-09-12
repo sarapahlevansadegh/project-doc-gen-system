@@ -2,28 +2,36 @@
 from __future__ import annotations
 
 import uuid
-from contextlib import suppress
 from time import perf_counter
 
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.types import ASGIApp
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
-class RequestIDMiddleware(BaseHTTPMiddleware):
+class RequestIDMiddleware:
     """Attach a unique request ID to each request; propagate via response header."""
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         request_id = str(uuid.uuid4())[:8]
-        request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
+        scope.setdefault("state", {})["request_id"] = request_id
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.append("X-Request-ID", request_id)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
-class ExplicitJSONCharsetMiddleware(BaseHTTPMiddleware):
+class ExplicitJSONCharsetMiddleware:
     """Force `; charset=utf-8` onto JSON response Content-Type headers.
 
     FastAPI/Starlette's default JSONResponse sends `Content-Type:
@@ -40,36 +48,55 @@ class ExplicitJSONCharsetMiddleware(BaseHTTPMiddleware):
     script/client to work around it.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        response = await call_next(request)
-        content_type = response.headers.get("content-type", "")
-        if content_type.startswith("application/json") and "charset" not in content_type:
-            response.headers["content-type"] = "application/json; charset=utf-8"
-        return response
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                content_type = headers.get("content-type", "")
+                if content_type.startswith("application/json") and "charset" not in content_type:
+                    headers["content-type"] = "application/json; charset=utf-8"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
+class RequestLoggingMiddleware:
     """Log request method, path, status, and duration."""
 
-    def __init__(self, app: ASGIApp, logger):
-        super().__init__(app)
+    def __init__(self, app: ASGIApp, logger) -> None:
+        self.app = app
         self._logger = logger
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         start = perf_counter()
-        response = await call_next(request)
+        status_code = 0
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
         duration = perf_counter() - start
-        rid = getattr(request.state, "request_id", "-")
+        rid = scope.get("state", {}).get("request_id", "-")
         self._logger.info(
             "%s %s %s %.3fs",
-            request.method,
-            request.url.path,
-            response.status_code,
+            scope["method"],
+            scope["path"],
+            status_code,
             duration,
             extra={"request_id": rid},
         )
-        return response

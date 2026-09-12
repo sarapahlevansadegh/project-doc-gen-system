@@ -10,9 +10,10 @@ import os
 import pytest
 
 
-def test_default_provider_is_anthropic():
+def test_default_provider_is_anthropic(monkeypatch):
     from agent.llm import _provider_from_env
 
+    monkeypatch.delenv("DOCGEN_LLM_PROVIDER", raising=False)
     with pytest.raises(KeyError):
         os.environ["DOCGEN_LLM_PROVIDER"]
     assert _provider_from_env() == "anthropic"
@@ -205,7 +206,9 @@ def test_ollama_generate_formats_request(monkeypatch):
 
     monkeypatch.setenv("DOCGEN_LLM_PROVIDER", "ollama")
     monkeypatch.setenv("DOCGEN_OLLAMA_URL", "http://localhost:11434/v1")
+    monkeypatch.delenv("DOCGEN_OLLAMA_MODEL", raising=False)
 
+    
     class FakeCompletions:
         def __init__(self, outer):
             self.outer = outer
@@ -239,9 +242,10 @@ def test_ollama_generate_formats_request(monkeypatch):
     assert client._client.last_call["temperature"] == 0.1
 
 
-def test_get_llm_client_returns_instance():
+def test_get_llm_client_returns_instance(monkeypatch):
     from agent.llm import get_llm_client
 
+    monkeypatch.delenv("DOCGEN_LLM_PROVIDER", raising=False)
     client = get_llm_client()
     assert isinstance(client, type(client))
     assert client.provider == "anthropic"

@@ -6,7 +6,7 @@ from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String,
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-
+# s
 class DeviceDocument(Base):
     """A file uploaded and attached to a device (any file type, any size)."""
 

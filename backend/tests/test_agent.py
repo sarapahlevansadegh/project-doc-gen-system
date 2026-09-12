@@ -225,6 +225,8 @@ def test_job_status_transitions_with_mocked_llm():
     from services import generation_service
 
     class _FakeJob:
+
+        id = uuid.uuid4()
         status = "pending"
         progress_pct = 0
         current_section = None
@@ -261,6 +263,7 @@ def test_failure_handling_sets_failed_status():
     from services import generation_service
 
     class _FakeJob:
+        id = uuid.uuid4()
         status = "pending"
         progress_pct = 0
         current_section = None

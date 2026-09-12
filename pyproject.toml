@@ -57,6 +57,7 @@ torch = [{ index = "pytorch-cpu" }]
 environments = [
     "sys_platform == 'linux'",
 ]
+index-strategy = "unsafe-best-match"
 
 
 [tool.pytest.ini_options]
