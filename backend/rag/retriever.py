@@ -103,9 +103,19 @@ async def get_reference_document(
 async def get_active_reference(
     db: AsyncSession,
 ) -> ReferenceDocument | None:
-    """Return the currently active reference document, if any."""
+    """Return the currently active reference document, if any.
+
+    Orders by created_at + limit(1) instead of scalar_one_or_none(): normal
+    production flow (set_active_reference) only ever leaves one row active,
+    but ad-hoc or test-seeded data can still end up with more than one
+    is_active=True row, and this endpoint should degrade to "most recent"
+    rather than 500 with MultipleResultsFound.
+    """
     result = await db.execute(
-        select(ReferenceDocument).where(ReferenceDocument.is_active.is_(True))
+        select(ReferenceDocument)
+        .where(ReferenceDocument.is_active.is_(True))
+        .order_by(ReferenceDocument.created_at.desc())
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

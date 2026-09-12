@@ -140,6 +140,128 @@ async def db_session() -> AsyncIterator[AsyncSession]:
             await connection.invalidate()
 
 
+def dispose_engine_sync() -> None:
+    """Dispose the shared engine's connection pool on a fresh throwaway loop.
+
+    Every old-style test below opens `TestClient(app)`, whose ASGI lifespan
+    runs on its own anyio-portal loop/thread; any pooled asyncpg connections
+    it creates via the shared `get_engine()`/`AsyncSessionLocal` singleton
+    are bound to that portal loop. When the `with TestClient(...)` block
+    exits, the portal thread and its loop are torn down, but those pooled
+    connections are NOT closed - they sit in the pool now bound to a dead
+    loop. The *next* test to draw a connection from that pool (whether a
+    pytest-asyncio session-loop test via the `client`/`db_session` fixtures,
+    or another dedicated-loop test) then fails with an opaque
+    "attached to a different loop" style RuntimeError, or worse, silently
+    corrupted auth state (e.g. a 403 where 409 was expected). Calling this
+    right after every TestClient block - mirroring the same
+    gate-then-dispose call already done *before* each block opens - closes
+    the pool out from under those dead connections so the next test starts
+    clean regardless of which loop style it uses.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(get_engine().dispose())
+    except Exception:
+        pass
+    finally:
+        loop.close()
+
+
+def seed_admin_user(loop: asyncio.AbstractEventLoop) -> tuple[str, str]:
+    """Insert a fresh admin user directly into the real dev DB and return
+    (email, password) for a subsequent /auth/login call.
+
+    For the older sync-TestClient tests (test_devices.py, test_journey.py,
+    test_agent.py's DB-gated helpers) that talk to the real database instead
+    of the isolated `db_session`/`client` SAVEPOINT fixtures above, relying
+    on register()'s "first user becomes admin" bootstrap is unreliable: once
+    any earlier test run has left a user row behind, a later "first"
+    registration in the same run is no longer actually first and gets a 403
+    instead of admin. Inserting the admin directly sidesteps that ordering
+    dependency entirely.
+
+    Callers run this on their own dedicated event loop *before* opening a
+    TestClient, mirroring the existing Postgres-gating pattern in
+    test_devices.py's `_client_and_loop` (dedicated loop -> dispose engine ->
+    let TestClient's own loop rebind it).
+
+    IMPORTANT: this row is a real, committed row in the real DB - unlike the
+    SAVEPOINT-isolated `client`/`db_session` fixtures, nothing rolls it back
+    automatically. Callers MUST pass the returned email to
+    `cleanup_seeded_user` in a `finally` block, or every test run leaves
+    another permanent admin user behind, which is exactly what breaks
+    test_auth.py's "first user in an empty DB becomes admin" assertions on
+    the next run.
+    """
+    import uuid
+
+    from core.security import hash_password
+    from models.user import User
+
+    email = f"test-{uuid.uuid4().hex[:12]}@example.com"
+    password = "TestPassword123!"
+
+    async def _seed() -> None:
+        from core.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            db.add(
+                User(
+                    id=uuid.uuid4(),
+                    email=email,
+                    hashed_password=hash_password(password),
+                    full_name="Test Admin",
+                    role="admin",
+                    is_active=True,
+                )
+            )
+            await db.commit()
+
+    loop.run_until_complete(_seed())
+    return email, password
+
+
+def cleanup_seeded_user(email: str) -> None:
+    """Delete a user row previously created by `seed_admin_user`.
+
+    Runs on its own fresh throwaway loop (same reasoning as
+    `dispose_engine_sync`), so it's safe to call from a `finally` block
+    after a dedicated-loop test's own loop has already been closed.
+    """
+
+    async def _cleanup() -> None:
+        from core.database import AsyncSessionLocal
+        from models.user import User
+        from sqlalchemy import delete
+
+        async with AsyncSessionLocal() as db:
+            await db.execute(delete(User).where(User.email == email))
+            await db.commit()
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_cleanup())
+    except Exception:
+        pass
+    finally:
+        loop.close()
+
+
+def login_headers_sync(client, email: str, password: str) -> dict[str, str]:
+    """Log in via a sync TestClient and return an Authorization header dict."""
+    resp = client.post("/auth/login", json={"email": email, "password": password})
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
+async def login_headers_async(client, email: str, password: str) -> dict[str, str]:
+    """Log in via an async httpx client and return an Authorization header dict."""
+    resp = await client.post("/auth/login", json={"email": email, "password": password})
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
 @pytest_asyncio.fixture
 async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     from app import app

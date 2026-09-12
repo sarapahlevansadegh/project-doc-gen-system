@@ -5,6 +5,13 @@ import asyncio
 
 import pytest
 
+from conftest import (
+    cleanup_seeded_user,
+    dispose_engine_sync,
+    login_headers_sync,
+    seed_admin_user,
+)
+
 
 @pytest.fixture
 def _client_and_loop():
@@ -18,6 +25,7 @@ def _client_and_loop():
     # gate on Postgres using a dedicated loop, then dispose engine so the
     # TestClient portal loop can rebind it
     loop = asyncio.new_event_loop()
+    admin_creds = None
     try:
         from sqlalchemy import text
 
@@ -31,6 +39,11 @@ def _client_and_loop():
             if "SELECT 1" in str(exc) or "connect" in str(exc).lower():
                 pytest.skip("Postgres unavailable")
             raise
+
+        # /devices is auth-protected (admin/engineer role); seed an admin
+        # here, on the same dedicated loop used for the Postgres check,
+        # before that loop is disposed and TestClient claims its own.
+        admin_creds = seed_admin_user(loop)
     finally:
         try:
             loop.run_until_complete(get_engine().dispose())
@@ -39,7 +52,15 @@ def _client_and_loop():
         loop.close()
 
     with TestClient(app) as client:
-        yield client
+        client.headers.update(login_headers_sync(client, *admin_creds))
+        try:
+            yield client
+        finally:
+            cleanup_seeded_user(admin_creds[0])
+    # see dispose_engine_sync's docstring: TestClient's portal loop just
+    # closed, and it may have left pooled connections bound to that dead
+    # loop - dispose again so the next test (any style) starts clean.
+    dispose_engine_sync()
 
 
 def _make_device(client):

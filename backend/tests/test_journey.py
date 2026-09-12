@@ -21,9 +21,19 @@ import io
 import time
 
 import pytest
+from conftest import (
+    cleanup_seeded_user,
+    dispose_engine_sync,
+    login_headers_sync,
+    seed_admin_user,
+)
 from docx import Document as DocxDocument
 
-EMBED_DIM = 384
+EMBED_DIM = 768  # matches settings.embed_dimension / BAAI/bge-base-en-v1.5 (Phase 3);
+                 # was 384 (stale MiniLM-L6-v2 value), which made every
+                 # /rag/reference upload in this test fail with
+                 # "expected 768 dimensions, not 384" against the real
+                 # pgvector(768) column
 
 
 def _fake_llm(self, prompt: str, max_tokens: int, temperature: float) -> str:
@@ -71,8 +81,13 @@ def test_end_to_end_user_journey():
         from core.database import AsyncSessionLocal, get_engine
 
         loop = asyncio.new_event_loop()
+        admin_creds = None
         try:
             loop.run_until_complete(_db_ok(AsyncSessionLocal))
+            # Every endpoint in this journey is auth-protected; seed an
+            # admin on the same dedicated loop used for the Postgres check,
+            # before that loop is disposed and TestClient claims its own.
+            admin_creds = seed_admin_user(loop)
         finally:
             try:
                 loop.run_until_complete(get_engine().dispose())
@@ -84,85 +99,101 @@ def test_end_to_end_user_journey():
             pytest.skip("Postgres unavailable")
         raise
 
-    with TestClient(app) as client:
-        monkeypatch_llm = _Monkey(client, LLMClient, "generate", _fake_llm)
-        monkeypatch_emb = _Monkey(client, rag_retriever, "embed_text", _fake_embed)
+    try:
+        with TestClient(app) as client:
+            client.headers.update(login_headers_sync(client, *admin_creds))
+            monkeypatch_llm = _Monkey(client, LLMClient, "generate", _fake_llm)
+            monkeypatch_emb = _Monkey(client, rag_retriever, "embed_text", _fake_embed)
 
-        with monkeypatch_llm, monkeypatch_emb:
-            # 1. Create a Device
-            dev_resp = client.post(
-                "/devices",
-                json={
-                    "name": "VL8",
-                    "model": "VL8",
-                    "document_code": "15799",
-                    "safety_class": "B",
-                    "driver_version": "01",
-                    "gui_version": "7.0.0.1",
-                },
-            )
-            assert dev_resp.status_code == 201, dev_resp.text
-            device_id = dev_resp.json()["id"]
+            with monkeypatch_llm, monkeypatch_emb:
+                # 1. Create a Device
+                dev_resp = client.post(
+                    "/devices",
+                    json={
+                        "name": "VL8",
+                        "model": "VL8",
+                        "document_code": "15799",
+                        "safety_class": "B",
+                        "driver_version": "01",
+                        "gui_version": "7.0.0.1",
+                    },
+                )
+                assert dev_resp.status_code == 201, dev_resp.text
+                device_id = dev_resp.json()["id"]
 
-            # 2. Upload a reference document (RAG extraction + embedding)
-            docx_bytes = _make_reference_docx()
-            ref_resp = client.post(
-                "/rag/reference",
-                files={"file": ("reference.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
-            )
-            assert ref_resp.status_code == 200, ref_resp.text
-            ref_json = ref_resp.json()
-            reference_id = ref_json["id"]
-            assert ref_json["section_count"] >= 1
+                # 2. Upload a reference document (RAG extraction + embedding)
+                docx_bytes = _make_reference_docx()
+                ref_resp = client.post(
+                    "/rag/reference",
+                    files={"file": ("reference.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+                )
+                assert ref_resp.status_code == 200, ref_resp.text
+                ref_json = ref_resp.json()
+                reference_id = ref_json["id"]
+                assert ref_json["section_count"] >= 1
 
-            # 3. Verify reference + RAG sections stored
-            sections_resp = client.get(f"/rag/reference/{reference_id}/sections")
-            assert sections_resp.status_code == 200
-            sections = sections_resp.json()
-            assert len(sections) >= 1
-            assert any(s["section_name"] for s in sections)
+                # 3. Verify reference + RAG sections stored
+                sections_resp = client.get(f"/rag/reference/{reference_id}/sections")
+                assert sections_resp.status_code == 200
+                sections = sections_resp.json()
+                assert len(sections) >= 1
+                assert any(s["section_name"] for s in sections)
 
-            # 4. Start document generation
-            gen_resp = client.post(
-                "/documents/generate",
-                json={
-                    "device_id": device_id,
-                    "reference_document_id": reference_id,
-                },
-            )
-            assert gen_resp.status_code == 202, gen_resp.text
-            job_id = gen_resp.json()["job_id"]
+                # 4. Start document generation
+                gen_resp = client.post(
+                    "/documents/generate",
+                    json={
+                        "device_id": device_id,
+                        "reference_document_id": reference_id,
+                    },
+                )
+                assert gen_resp.status_code == 202, gen_resp.text
+                job_id = gen_resp.json()["job_id"]
 
-            # 5 + 7. Verify background job lifecycle + wait until complete
-            final_status = None
-            for _ in range(100):  # up to ~20s
-                status_resp = client.get(f"/documents/{job_id}")
-                assert status_resp.status_code == 200, status_resp.text
-                final_status = status_resp.json()["status"]
-                if final_status in ("completed", "failed"):
-                    break
-                time.sleep(0.2)
-            assert final_status == "completed", f"job ended as {final_status}"
+                # 5 + 7. Verify background job lifecycle + wait until complete
+                final_status = None
+                for _ in range(100):  # up to ~20s
+                    status_resp = client.get(f"/documents/{job_id}")
+                    assert status_resp.status_code == 200, status_resp.text
+                    final_status = status_resp.json()["status"]
+                    if final_status in ("completed", "failed"):
+                        break
+                    time.sleep(0.2)
+                assert final_status == "completed", f"job ended as {final_status}"
 
-            # 6. Connect to WebSocket progress and verify hardened payload
-            with client.websocket_connect(f"/documents/{job_id}/progress") as ws:
-                msg = ws.receive_json()
-                assert msg["job_id"] == job_id
-                assert msg["status"] == "completed"
-                assert "current_section" in msg
-                assert "progress_pct" in msg
-                assert msg["progress_pct"] == 100
-                assert msg["error_message"] is None
+                # 6. Connect to WebSocket progress and verify hardened payload
+                # (the WS route reads its token from a query param, not from
+                # TestClient's default header, since browsers can't set custom
+                # headers on a WebSocket handshake either)
+                ws_token = client.headers["Authorization"].removeprefix("Bearer ")
+                with client.websocket_connect(
+                    f"/documents/{job_id}/progress?token={ws_token}"
+                ) as ws:
+                    msg = ws.receive_json()
+                    assert msg["job_id"] == job_id
+                    assert msg["status"] == "completed"
+                    assert "current_section" in msg
+                    assert "progress_pct" in msg
+                    assert msg["progress_pct"] == 100
+                    assert msg["error_message"] is None
 
-            # 8. Download the generated DOCX
-            dl_resp = client.get(f"/documents/{job_id}/download")
-            assert dl_resp.status_code == 200, dl_resp.text
-            content = dl_resp.content
-            assert content[:2] == b"PK"  # zip/docx magic
+                # 8. Download the generated DOCX
+                dl_resp = client.get(f"/documents/{job_id}/download")
+                assert dl_resp.status_code == 200, dl_resp.text
+                content = dl_resp.content
+                assert content[:2] == b"PK"  # zip/docx magic
 
-            # 9. Verify it is a valid DOCX (re-open with python-docx)
-            verify_doc = DocxDocument(io.BytesIO(content))
-            assert len(verify_doc.paragraphs) > 0
+                # 9. Verify it is a valid DOCX (re-open with python-docx)
+                verify_doc = DocxDocument(io.BytesIO(content))
+                assert len(verify_doc.paragraphs) > 0
+
+    finally:
+        cleanup_seeded_user(admin_creds[0])
+
+    # see dispose_engine_sync's docstring: TestClient's portal loop just
+    # closed, and it may have left pooled connections bound to that dead
+    # loop - dispose again so the next test (any style) starts clean.
+    dispose_engine_sync()
 
 
 class _Monkey:

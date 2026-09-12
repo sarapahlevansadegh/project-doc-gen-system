@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 documents_router = APIRouter(prefix="/documents", tags=["documents"])
 
+# Fire-and-forget generation tasks are not awaited by the request, so nothing
+# else holds a strong reference to them. asyncio does NOT protect a pending
+# Task from garbage collection on its own (see the "Save a reference to the
+# result" warning in the asyncio.create_task docs) - without this set, a GC
+# pass between create_task() and the task's first await could silently drop
+# an in-flight generation job. Each task removes itself once done.
+_background_tasks: set[asyncio.Task] = set()
+
 
 class GenerateRequest(BaseModel):
     device_id: uuid.UUID
@@ -93,6 +101,8 @@ async def generate_document(
     task = asyncio.create_task(
         generation_service.run_generation(str(job.id))
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     task.add_done_callback(_log_generation_task_result)
     logger.info("Task scheduled: job_id=%s", job.id)
     return GenerateResponse(job_id=str(job.id), status=job.status)

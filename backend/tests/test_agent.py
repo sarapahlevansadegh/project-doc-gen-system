@@ -12,6 +12,13 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from conftest import (
+    cleanup_seeded_user,
+    dispose_engine_sync,
+    login_headers_async,
+    login_headers_sync,
+    seed_admin_user,
+)
 
 # ---------- helpers ----------
 
@@ -322,189 +329,238 @@ async def _run_endpoint_tests():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/documents/generate",
-            json={
-                "device_id": str(uuid.uuid4()),
-                "reference_document_id": str(uuid.uuid4()),
-            },
-        )
-        assert resp.status_code in (202, 404)  # 404 if device/ref missing
-        if resp.status_code == 202:
-            assert "job_id" in resp.json()
+        # every route exercised below is auth-protected; seed an admin
+        # directly (this function already runs on its own asyncio.run loop,
+        # so no separate event loop juggling is needed here, unlike the
+        # sync-TestClient tests) and default the client to send its token
+        from core.security import hash_password
+        from models.user import User
 
-        # --- smart generation (Milestone 6.3) ---
-        from models.template import ReferenceDocument
-
-        # seed an active reference + a device, then generate without ref id
-        active_ref_id = str(uuid.uuid4())
-        device_id = str(uuid.uuid4())
+        admin_email = f"test-{uuid.uuid4().hex[:12]}@example.com"
+        admin_password = "TestPassword123!"
         async with AsyncSessionLocal() as db:
             db.add(
-                ReferenceDocument(
-                    id=uuid.UUID(active_ref_id),
-                    filename="active_ref.docx",
-                    template_name="active_ref",
+                User(
+                    id=uuid.uuid4(),
+                    email=admin_email,
+                    hashed_password=hash_password(admin_password),
+                    full_name="Test Admin",
+                    role="admin",
                     is_active=True,
-                    section_count=1,
-                    version=1,
-                    embedding_model="test",
-                    embedding_dimension=384,
-                )
-            )
-            db.add(
-                Device(
-                    id=uuid.UUID(device_id),
-                    name="SmartDevice",
-                    model="VL8",
                 )
             )
             await db.commit()
+        client.headers.update(await login_headers_async(client, admin_email, admin_password))
 
-        smart = await client.post(
-            "/documents/generate",
-            json={"device_id": device_id},
-        )
-        assert smart.status_code == 202, smart.text
-        assert "job_id" in smart.json()
+        try:
+            resp = await client.post(
+                "/documents/generate",
+                json={
+                    "device_id": str(uuid.uuid4()),
+                    "reference_document_id": str(uuid.uuid4()),
+                },
+            )
+            assert resp.status_code in (202, 404)  # 404 if device/ref missing
+            if resp.status_code == 202:
+                assert "job_id" in resp.json()
 
-        # deactivate all references -> generate without ref id should 404
-        async with AsyncSessionLocal() as db:
-            ref = await db.get(ReferenceDocument, uuid.UUID(active_ref_id))
-            if ref is not None:
-                ref.is_active = False
+            # --- smart generation (Milestone 6.3) ---
+            from sqlalchemy import update
+
+            from models.template import ReferenceDocument
+
+            # This test runs against the real dev DB (not an isolated
+            # transaction), so earlier runs can leave other is_active=True rows
+            # behind. Clear those first so "deactivate -> 404" below is only
+            # ever checking the row this test itself controls.
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    update(ReferenceDocument)
+                    .where(ReferenceDocument.is_active.is_(True))
+                    .values(is_active=False)
+                )
                 await db.commit()
 
-        no_active = await client.post(
-            "/documents/generate",
-            json={"device_id": device_id},
-        )
-        assert no_active.status_code == 404, no_active.text
-
-        resp = await client.get(f"/documents/{uuid.uuid4()}")
-        assert resp.status_code == 404
-
-        # --- download endpoint (Milestone 4.3) ---
-        missing = await client.get(f"/documents/{uuid.uuid4()}/download")
-        assert missing.status_code == 404
-
-        # seed a valid device so FK constraints hold, then a completed job
-        # pointing at a real temp file
-        tmp = Path(tempfile.mkdtemp()) / "sample.docx"
-        tmp.write_bytes(b"PK\x03\x04 fake docx content")
-
-        device_id = str(uuid.uuid4())
-        async with AsyncSessionLocal() as db:
-            db.add(
-                Device(
-                    id=uuid.UUID(device_id),
-                    name="TestDevice",
-                    model="VL8",
+            # seed an active reference + a device, then generate without ref id
+            active_ref_id = str(uuid.uuid4())
+            device_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    ReferenceDocument(
+                        id=uuid.UUID(active_ref_id),
+                        filename="active_ref.docx",
+                        template_name="active_ref",
+                        is_active=True,
+                        section_count=1,
+                        version=1,
+                        embedding_model="test",
+                        embedding_dimension=384,
+                    )
                 )
-            )
-            await db.commit()
-
-        job_id = str(uuid.uuid4())
-        async with AsyncSessionLocal() as db:
-            db.add(
-                GeneratedDocument(
-                    id=uuid.UUID(job_id),
-                    device_id=uuid.UUID(device_id),
-                    reference_doc_id=None,
-                    status="completed",
-                    progress_pct=100,
-                    file_path=str(tmp),
-                    version=1,
+                db.add(
+                    Device(
+                        id=uuid.UUID(device_id),
+                        name="SmartDevice",
+                        model="VL8",
+                    )
                 )
+                await db.commit()
+
+            smart = await client.post(
+                "/documents/generate",
+                json={"device_id": device_id},
             )
-            await db.commit()
+            assert smart.status_code == 202, smart.text
+            assert "job_id" in smart.json()
 
-        ok = await client.get(f"/documents/{job_id}/download")
-        assert ok.status_code == 200
-        assert ok.content == b"PK\x03\x04 fake docx content"
+            # deactivate all references -> generate without ref id should 404
+            async with AsyncSessionLocal() as db:
+                ref = await db.get(ReferenceDocument, uuid.UUID(active_ref_id))
+                if ref is not None:
+                    ref.is_active = False
+                    await db.commit()
 
-        # not-completed job -> error (no FileResponse)
-        pending_id = str(uuid.uuid4())
-        async with AsyncSessionLocal() as db:
-            db.add(
-                GeneratedDocument(
-                    id=uuid.UUID(pending_id),
-                    device_id=uuid.UUID(device_id),
-                    reference_doc_id=None,
-                    status="processing",
-                    progress_pct=10,
-                    file_path=str(tmp),
-                    version=1,
+            no_active = await client.post(
+                "/documents/generate",
+                json={"device_id": device_id},
+            )
+            assert no_active.status_code == 404, no_active.text
+
+            resp = await client.get(f"/documents/{uuid.uuid4()}")
+            assert resp.status_code == 404
+
+            # --- download endpoint (Milestone 4.3) ---
+            missing = await client.get(f"/documents/{uuid.uuid4()}/download")
+            assert missing.status_code == 404
+
+            # seed a valid device so FK constraints hold, then a completed job
+            # pointing at a real temp file
+            tmp = Path(tempfile.mkdtemp()) / "sample.docx"
+            tmp.write_bytes(b"PK\x03\x04 fake docx content")
+
+            device_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    Device(
+                        id=uuid.UUID(device_id),
+                        name="TestDevice",
+                        model="VL8",
+                    )
                 )
-            )
-            await db.commit()
+                await db.commit()
 
-        pending = await client.get(f"/documents/{pending_id}/download")
-        assert pending.status_code == 409
-
-        # completed but file missing -> 404
-        missing_file_id = str(uuid.uuid4())
-        async with AsyncSessionLocal() as db:
-            db.add(
-                GeneratedDocument(
-                    id=uuid.UUID(missing_file_id),
-                    device_id=uuid.UUID(device_id),
-                    reference_doc_id=None,
-                    status="completed",
-                    progress_pct=100,
-                    file_path=str(Path(tempfile.mkdtemp()) / "gone.docx"),
-                    version=1,
+            job_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    GeneratedDocument(
+                        id=uuid.UUID(job_id),
+                        device_id=uuid.UUID(device_id),
+                        reference_doc_id=None,
+                        status="completed",
+                        progress_pct=100,
+                        file_path=str(tmp),
+                        version=1,
+                    )
                 )
-            )
-            await db.commit()
+                await db.commit()
 
-        gone = await client.get(f"/documents/{missing_file_id}/download")
-        assert gone.status_code == 404
+            ok = await client.get(f"/documents/{job_id}/download")
+            assert ok.status_code == 200
+            assert ok.content == b"PK\x03\x04 fake docx content"
 
-        # --- document version history (Milestone 7.1) ---
-        hist_device_id = str(uuid.uuid4())
-        hist_ref_id = str(uuid.uuid4())
-        async with AsyncSessionLocal() as db:
-            db.add(
-                Device(id=uuid.UUID(hist_device_id), name="HistDevice", model="VL8")
-            )
-            db.add(
-                ReferenceDocument(
-                    id=uuid.UUID(hist_ref_id),
-                    filename="hist_ref.docx",
-                    template_name="hist_ref",
-                    is_active=True,
-                    section_count=1,
-                    version=1,
-                    embedding_model="test",
-                    embedding_dimension=384,
+            # not-completed job -> error (no FileResponse)
+            pending_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    GeneratedDocument(
+                        id=uuid.UUID(pending_id),
+                        device_id=uuid.UUID(device_id),
+                        reference_doc_id=None,
+                        status="processing",
+                        progress_pct=10,
+                        file_path=str(tmp),
+                        version=1,
+                    )
                 )
+                await db.commit()
+
+            pending = await client.get(f"/documents/{pending_id}/download")
+            assert pending.status_code == 409
+
+            # completed but file missing -> 404
+            missing_file_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    GeneratedDocument(
+                        id=uuid.UUID(missing_file_id),
+                        device_id=uuid.UUID(device_id),
+                        reference_doc_id=None,
+                        status="completed",
+                        progress_pct=100,
+                        file_path=str(Path(tempfile.mkdtemp()) / "gone.docx"),
+                        version=1,
+                    )
+                )
+                await db.commit()
+
+            gone = await client.get(f"/documents/{missing_file_id}/download")
+            assert gone.status_code == 404
+
+            # --- document version history (Milestone 7.1) ---
+            hist_device_id = str(uuid.uuid4())
+            hist_ref_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    Device(id=uuid.UUID(hist_device_id), name="HistDevice", model="VL8")
+                )
+                db.add(
+                    ReferenceDocument(
+                        id=uuid.UUID(hist_ref_id),
+                        filename="hist_ref.docx",
+                        template_name="hist_ref",
+                        is_active=True,
+                        section_count=1,
+                        version=1,
+                        embedding_model="test",
+                        embedding_dimension=384,
+                    )
+                )
+                await db.commit()
+
+            r1 = await client.post(
+                "/documents/generate",
+                json={"device_id": hist_device_id},
             )
-            await db.commit()
+            assert r1.status_code == 202, r1.text
 
-        r1 = await client.post(
-            "/documents/generate",
-            json={"device_id": hist_device_id},
-        )
-        assert r1.status_code == 202, r1.text
+            r2 = await client.post(
+                "/documents/generate",
+                json={"device_id": hist_device_id},
+            )
+            assert r2.status_code == 202, r2.text
 
-        r2 = await client.post(
-            "/documents/generate",
-            json={"device_id": hist_device_id},
-        )
-        assert r2.status_code == 202, r2.text
+            hist = await client.get(f"/documents/history/{hist_device_id}")
+            assert hist.status_code == 200, hist.text
+            items = hist.json()
+            assert len(items) == 2
+            versions = [item["version"] for item in items]
+            assert sorted(versions) == [1, 2]
+            assert items[0]["version"] == 2
+            assert items[0]["status"] in ("pending", "processing", "completed", "failed")
+            assert items[1]["version"] == 1
 
-        hist = await client.get(f"/documents/history/{hist_device_id}")
-        assert hist.status_code == 200, hist.text
-        items = hist.json()
-        assert len(items) == 2
-        versions = [item["version"] for item in items]
-        assert sorted(versions) == [1, 2]
-        assert items[0]["version"] == 2
-        assert items[0]["status"] in ("pending", "processing", "completed", "failed")
-        assert items[1]["version"] == 1
+            not_found_hist = await client.get(f"/documents/history/{uuid.uuid4()}")
+            assert not_found_hist.status_code == 404
+        finally:
+            # this admin user is a real, committed row (see
+            # seed_admin_user's docstring in conftest.py for why) -
+            # clean it up so it doesn't break test_auth.py's
+            # "first user in an empty DB" assertions on a later run.
+            from sqlalchemy import delete as _delete
+            async with AsyncSessionLocal() as _db:
+                await _db.execute(_delete(User).where(User.email == admin_email))
+                await _db.commit()
 
-        assert client.get(f"/documents/history/{uuid.uuid4()}").status_code == 404
 
 
 async def _seed_document(device_id, job_id, status, progress, section=None,
@@ -549,6 +605,7 @@ def test_websocket_progress():
 
     # gate + seed on a dedicated loop (TestClient runs its own loop for WS)
     loop = asyncio.new_event_loop()
+    admin_creds = None
     try:
         try:
             loop.run_until_complete(_db_available())
@@ -556,6 +613,10 @@ def test_websocket_progress():
             if "SELECT 1" in str(exc) or "connect" in str(exc).lower():
                 pytest.skip("Postgres unavailable")
             raise
+
+        # the progress WS is token-gated; seed an admin on this same
+        # dedicated loop before it's disposed and TestClient claims its own
+        admin_creds = seed_admin_user(loop)
 
         async def _seed():
             async with AsyncSessionLocal() as db:
@@ -582,47 +643,61 @@ def test_websocket_progress():
             pass
         loop.close()
 
-    with TestClient(app) as client:
-        # not_found job -> single message with status not_found, then closed
-        with client.websocket_connect(
-            f"/documents/{not_found_id}/progress"
-        ) as ws:
-            msg = ws.receive_json()
-            assert msg["status"] == "not_found"
-            assert msg["job_id"] == not_found_id
-            assert msg["current_section"] is None
-            assert msg["progress_pct"] == 0
-            assert msg["error_message"] is None
+    try:
+        with TestClient(app) as client:
+            client.headers.update(login_headers_sync(client, *admin_creds))
+            # the WS route reads its token from a query param (no custom
+            # headers on a WebSocket handshake), so pass it explicitly below
+            ws_token = client.headers["Authorization"].removeprefix("Bearer ")
 
-        # failed job -> error_message present, then closed
-        with client.websocket_connect(
-            f"/documents/{failed_id}/progress"
-        ) as ws:
-            msg = ws.receive_json()
-            assert msg["job_id"] == failed_id
-            assert msg["status"] == "failed"
-            assert msg["current_section"] == "LCD Module"
-            assert msg["progress_pct"] == 50
-            assert msg["error_message"] == "LLM outage"
+            # not_found job -> single message with status not_found, then closed
+            with client.websocket_connect(
+                f"/documents/{not_found_id}/progress?token={ws_token}"
+            ) as ws:
+                msg = ws.receive_json()
+                assert msg["status"] == "not_found"
+                assert msg["job_id"] == not_found_id
+                assert msg["current_section"] is None
+                assert msg["progress_pct"] == 0
+                assert msg["error_message"] is None
 
-        # processing job -> emits current state, then closed
-        with client.websocket_connect(
-            f"/documents/{pending_id}/progress"
-        ) as ws:
-            msg = ws.receive_json()
-            assert msg["job_id"] == pending_id
-            assert msg["status"] == "processing"
-            assert msg["progress_pct"] == 10
-            assert msg["error_message"] is None
+            # failed job -> error_message present, then closed
+            with client.websocket_connect(
+                f"/documents/{failed_id}/progress?token={ws_token}"
+            ) as ws:
+                msg = ws.receive_json()
+                assert msg["job_id"] == failed_id
+                assert msg["status"] == "failed"
+                assert msg["current_section"] == "LCD Module"
+                assert msg["progress_pct"] == 50
+                assert msg["error_message"] == "LLM outage"
 
-        # completed job -> emits final state, then closed
-        with client.websocket_connect(
-            f"/documents/{completed_id}/progress"
-        ) as ws:
-            msg = ws.receive_json()
-            assert msg["job_id"] == completed_id
-            assert msg["status"] == "completed"
-            assert msg["progress_pct"] == 100
+            # processing job -> emits current state, then closed
+            with client.websocket_connect(
+                f"/documents/{pending_id}/progress?token={ws_token}"
+            ) as ws:
+                msg = ws.receive_json()
+                assert msg["job_id"] == pending_id
+                assert msg["status"] == "processing"
+                assert msg["progress_pct"] == 10
+                assert msg["error_message"] is None
+
+            # completed job -> emits final state, then closed
+            with client.websocket_connect(
+                f"/documents/{completed_id}/progress?token={ws_token}"
+            ) as ws:
+                msg = ws.receive_json()
+                assert msg["job_id"] == completed_id
+                assert msg["status"] == "completed"
+                assert msg["progress_pct"] == 100
+
+    finally:
+        cleanup_seeded_user(admin_creds[0])
+
+    # see dispose_engine_sync's docstring: TestClient's portal loop just
+    # closed, and it may have left pooled connections bound to that dead
+    # loop - dispose again so the next test (any style) starts clean.
+    dispose_engine_sync()
 
 
 def test_generate_endpoint_and_status():
@@ -637,4 +712,11 @@ def test_generate_endpoint_and_status():
         if "SELECT 1" in str(exc) or "connect" in str(exc).lower():
             pytest.skip("Postgres unavailable")
         raise
+    finally:
+        # _run_endpoint_tests's AsyncSessionLocal/get_engine() connections
+        # were all created on the loop asyncio.run() just closed; any that
+        # are sitting idle in the pool (rather than explicitly closed) are
+        # now loop-dead. See dispose_engine_sync's docstring - dispose again
+        # so the next test (any style) starts clean.
+        dispose_engine_sync()
 
