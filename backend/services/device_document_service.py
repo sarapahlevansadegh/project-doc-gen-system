@@ -9,6 +9,7 @@ the on-disk filename is sanitized so a crafted ``filename`` cannot escape
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -17,9 +18,13 @@ from config import settings
 from fastapi import HTTPException, UploadFile
 from models.device import Device
 from models.device_document import DeviceDocument
+from rag.chunk_service import generate_and_store_chunks
 from schemas.device import DeviceCreate
 from services import device_document_parser, device_service
+from services.ontology_extraction_service import extract_and_store_ontology
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 DEVICE_DOCUMENTS_DIR = Path("device_documents")
 DEVICE_DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -129,8 +134,35 @@ async def _attach_document(
     # Best-effort structural parse (Phase 2.5): failures here must not roll
     # back or fail the upload itself, since the file is already saved and
     # attached - parse_and_store_sections already swallows its own errors.
-    await device_document_parser.parse_and_store_sections(
+    section_count = await device_document_parser.parse_and_store_sections(
         db, document_id=document.id, storage_path=document.storage_path
     )
+
+    # Phase 3 + 3.5, now run inline on upload rather than as separate manual
+    # steps: chunk+embed the extracted sections, then extract ontology
+    # entities/relationships from those chunks. Same best-effort principle
+    # as the parse step above - a chunking or LLM-extraction failure must
+    # not fail the upload, since the document itself is already saved and
+    # usable; either step can still be re-triggered manually via the
+    # /chunks and /ontology endpoints (e.g. after a chunking-logic change).
+    if section_count > 0:
+        try:
+            chunk_count = await generate_and_store_chunks(db, document.id)
+        except Exception:
+            logger.exception(
+                "Chunk generation failed for device document %s, skipping "
+                "ontology extraction",
+                document.id,
+            )
+            chunk_count = 0
+
+        if chunk_count > 0:
+            try:
+                await extract_and_store_ontology(db, document.id)
+            except Exception:
+                logger.exception(
+                    "Ontology extraction failed for device document %s",
+                    document.id,
+                )
 
     return document

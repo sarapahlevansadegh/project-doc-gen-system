@@ -189,12 +189,13 @@ async def generate_device_document_chunks(
     db: AsyncSession = Depends(get_db),
     _=Depends(require_role("admin", "engineer")),
 ):
-    """Generate (or regenerate) RAG chunks + embeddings for a device
-    document's already-extracted sections (Phase 3).
+    """(Re)generate RAG chunks + embeddings for a device document's
+    already-extracted sections (Phase 3).
 
-    A separate, explicit step from upload since embedding is comparatively
-    expensive - callers can re-trigger it independently, e.g. after a
-    chunking-logic change, without re-uploading the document.
+    This already runs automatically as part of upload (see
+    services/device_document_service.py's _attach_document). This endpoint
+    exists to re-trigger it independently, e.g. after a chunking-logic
+    change, without re-uploading the document.
     """
     result = await db.execute(
         select(DeviceDocumentSection.id).where(
@@ -223,10 +224,11 @@ async def generate_device_document_ontology(
     document's already-generated chunks and persist them into that
     device's ontology graph.
 
-    A separate, explicit step from chunk generation, same reasoning as
-    that endpoint: this is at least one LLM call per chunk (two if it
-    contains a relationship), so callers re-trigger it independently
-    rather than it running automatically on chunk generation.
+    This already runs automatically as part of upload, right after chunk
+    generation (see services/device_document_service.py's
+    _attach_document). This endpoint exists to re-trigger it
+    independently, e.g. after an extraction-prompt change, without
+    re-uploading the document.
     """
     chunks_exist = await db.execute(
         select(DocumentChunk.id).where(DocumentChunk.device_document_id == document_id)

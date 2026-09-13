@@ -6,11 +6,14 @@ functions, no DB, no wiring - see its own docstring) to the rest of the
 project: nothing outside ontology/ and its tests referenced it before
 this file existed.
 
-Mirrors rag.chunk_service.generate_and_store_chunks / the
-/devices/documents/{id}/chunks endpoint pattern: this is its own explicit,
-re-triggerable step (LLM-call-heavy, one call per chunk for entities plus
-one more for relationships), not something that runs automatically on
-upload.
+Mirrors rag.chunk_service.generate_and_store_chunks: run inline as part of
+upload (see services/device_document_service.py's _attach_document), right
+after chunk generation, and also re-triggerable independently via the
+/devices/documents/{id}/ontology endpoint (e.g. after an extraction-prompt
+change, without re-uploading). LLM-call-heavy - one call per chunk for
+entities, plus one more for relationships - so a slow or failing
+extraction must not take the whole upload down with it; see the
+fail-soft/best-effort handling in _attach_document.
 """
 from __future__ import annotations
 

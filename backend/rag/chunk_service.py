@@ -3,9 +3,10 @@
 Orchestrates rag/chunker.py (token-aware, table-safe splitting) and
 rag/device_embedding_service.py (bge-base-en-v1.5 embedding) against the
 device_document_sections rows already stored by Phase 2.5's
-services/device_document_parser.py. Kept as its own step (not run inline
-during upload) since embedding is comparatively expensive and callers may
-want to re-run it independently (e.g. after a chunking logic change).
+services/device_document_parser.py. Run inline as part of upload (see
+services/device_document_service.py's _attach_document), and also
+re-triggerable independently via the /devices/documents/{id}/chunks
+endpoint (e.g. after a chunking logic change, without re-uploading).
 """
 from __future__ import annotations
 
