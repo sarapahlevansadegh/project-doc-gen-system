@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from rag.chunk_service import generate_and_store_chunks
 from schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
 from services import device_document_service, device_service
+from services.document_diff_planner import check_ontology_consistency
 from services.ontology_extraction_service import extract_and_store_ontology
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -110,6 +111,17 @@ class GenerateOntologyResponse(BaseModel):
     chunks_processed: int
     entities_upserted: int
     relationships_upserted: int
+
+
+class OntologyConsistencyIssueOut(BaseModel):
+    entity_type: str
+    key: str
+    values: list[str]
+
+
+class OntologyConsistencyResponse(BaseModel):
+    device_id: uuid.UUID
+    issues: list[OntologyConsistencyIssueOut]
 
 
 @devices_router.post("", response_model=DeviceOut, status_code=201)
@@ -291,6 +303,40 @@ async def get_device_document_image(
 
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return Response(content=path.read_bytes(), media_type=media_type)
+
+
+@devices_router.get(
+    "/{device_id}/ontology/consistency", response_model=OntologyConsistencyResponse
+)
+async def get_device_ontology_consistency(
+    device_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_active_user),
+):
+    """Phase 3.5/4 Graph-RAG guardrail: flag Specification facts already
+    extracted into this device's ontology graph (via the
+    POST /documents/{document_id}/ontology endpoint above) that disagree
+    with each other - e.g. a GUI software version stated one way in one
+    place and differently in another. See
+    services/document_diff_planner.check_ontology_consistency for the
+    matching logic.
+
+    Read-only: does not run extraction and does not touch any diff plan.
+    An empty ``issues`` list means no contradiction was found among
+    whatever has been extracted so far - it does NOT mean the documents
+    have no inconsistencies if ontology extraction hasn't been run for
+    them yet.
+    """
+    issues = await check_ontology_consistency(db, device_id)
+    return OntologyConsistencyResponse(
+        device_id=device_id,
+        issues=[
+            OntologyConsistencyIssueOut(
+                entity_type=issue.entity_type, key=issue.key, values=list(issue.values)
+            )
+            for issue in issues
+        ],
+    )
 
 
 @devices_router.get("/{device_id}", response_model=DeviceOut)

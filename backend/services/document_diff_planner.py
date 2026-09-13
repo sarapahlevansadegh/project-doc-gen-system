@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass
 
 from agent.llm import LLMClient, get_llm_client
+from models.ontology import OntologyEntity
 from models.template import DocumentTemplate
 from rag.reference_bge_embedding import find_matching_device_chunks
 from sqlalchemy import select
@@ -328,3 +329,118 @@ async def build_document_plan(
         )
         plans.append(plan)
     return plans
+
+
+@dataclass(frozen=True)
+class OntologyInconsistency:
+    entity_type: str
+    key: str
+    values: tuple[str, ...]
+
+
+# Separators a Specification entity's free-text value is expected to use
+# between its "name" and its "number/setting" half, e.g.
+# "GUI Software Version: 7.0.0.7650" -> key "gui software version". Order
+# matters only in that the first separator found in the value wins.
+_SPEC_KEY_SEPARATORS = (":", "=", "\u2013", "-")
+
+
+# Separators a Specification entity's free-text value is expected to use
+# between its "name" and its "number/setting" half, e.g.
+# "GUI Software Version: 7.0.0.7650" -> key "gui software version". Order
+# matters only in that the first separator found in the value wins.
+_SPEC_KEY_SEPARATORS = (":", "=", "\u2013", "-")
+
+# A key with fewer words than this is too generic to trust - e.g. "Power"
+# recurs across unrelated facts throughout a document (a table's byte-field
+# description, an actual output-power limit, ...), and grouping those
+# together produces a false-positive "conflict" rather than a real one.
+# Same principle as document_diff_planner's own _MIN_ANCHOR_LEN: a match
+# needs to be specific enough to trust before it's surfaced as a finding.
+_MIN_SPEC_KEY_WORDS = 2
+
+
+def _specification_key(value: str) -> str | None:
+    """Best-effort normalized "key" for a Specification entity's free-text
+    value, so two chunks stating the SAME spec with a DIFFERENT
+    number/setting (e.g. two different GUI version strings) can be grouped
+    together for the consistency check below - even though their full
+    (entity_type, value) pairs differ and are therefore NOT deduplicated
+    by services/ontology_extraction_service.py's unique constraint (that
+    constraint only merges an EXACT repeated value, see
+    test_entity_deduplicates_across_documents_for_the_same_device).
+
+    Returns None - meaning "don't group this value with anything" - in
+    two cases, both found as real false positives testing against the VL8
+    golden fixture:
+
+    1. No recognized separator in the value at all (e.g. a bare label
+       like "Duty Cycle" with no attached value). An earlier version of
+       this function fell back to the whole lowercased value as its own
+       key, intending that as "safe" (an isolated key can't collide with
+       anything) - but it silently CAN collide: "Duty Cycle" the bare
+       label normalizes to the same key as "Duty Cycle: Adjustable from
+       5% to 100%..."'s derived key ("duty cycle"), flagging two
+       unrelated extractions as a contradiction. A bare label isn't a
+       fact in the first place, so it must never form a key.
+    2. The derived key has fewer than _MIN_SPEC_KEY_WORDS words (e.g.
+       "Power") - too generic to trust, per _MIN_SPEC_KEY_WORDS above.
+    """
+    key = None
+    for sep in _SPEC_KEY_SEPARATORS:
+        if sep in value:
+            key = value.split(sep, 1)[0].strip().lower()
+            break
+    if key is None:
+        return None
+    if len(key.split()) < _MIN_SPEC_KEY_WORDS:
+        return None
+    return key
+
+
+async def check_ontology_consistency(
+    db: AsyncSession, device_id: uuid.UUID
+) -> list[OntologyInconsistency]:
+    """Phase 3.5/4 guardrail: flag Specification entities extracted into
+    this device's ontology graph whose normalized key (e.g. "gui software
+    version") maps to more than one distinct value - i.e. the same
+    underlying spec stated inconsistently somewhere across this device's
+    documents/chunks (the case this exists for: a GUI software version
+    number stated one way in one place and differently in another - see
+    the VL8 golden reference fixture in project memory).
+
+    Read-only and side-effect free: it only queries already-persisted
+    OntologyEntity rows (populated by
+    services/ontology_extraction_service.extract_and_store_ontology, run
+    separately - see backend/api/routes/devices.py's
+    POST /devices/documents/{document_id}/ontology). It does not call the
+    LLM and does not itself alter or block build_document_plan()'s output;
+    callers (e.g. the API layer) decide what to do with a non-empty
+    result - typically surfacing it to a human reviewer before a plan
+    built from this device's documents is applied.
+
+    Only entity_type="Specification" is checked: the other entity types
+    (Device, Wavelength, Power, Component, Alarm, Indicator) in
+    ontology/schema.py name discrete things rather than "key: value"
+    facts, so there is no separator-based key to group them by.
+    """
+    result = await db.execute(
+        select(OntologyEntity).where(
+            OntologyEntity.device_id == device_id,
+            OntologyEntity.entity_type == "Specification",
+        )
+    )
+    entities = result.scalars().all()
+
+    values_by_key: dict[str, set[str]] = {}
+    for entity in entities:
+        key = _specification_key(entity.value)
+        if key is None:
+            continue
+        values_by_key.setdefault(key, set()).add(entity.value)
+
+    return [
+        OntologyInconsistency(entity_type="Specification", key=key, values=tuple(sorted(values)))
+        for key, values in values_by_key.items()
+        if len(values) > 1
+    ]

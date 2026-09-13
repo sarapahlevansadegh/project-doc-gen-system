@@ -37,7 +37,15 @@ TEXT:
 For each entity you find, output its type (must be exactly one of the allowed types above) and its value exactly as it appears in the text. Do not invent an entity that isn't explicitly stated in the text - if the text doesn't mention something, don't extract it.
 
 Respond with ONLY a JSON array, no markdown code fences, no commentary before or after:
-[{{"type": "Device", "value": "VL8"}}, {{"type": "Wavelength", "value": "810 nm"}}]
+[{{"type": "Device", "value": "VL8"}}, {{"type": "Wavelength", "value": "810 nm"}}, {{"type": "Specification", "value": "GUI Software Version: 7.0.0.7650"}}]
+
+A "Specification" is any plain "label: value" fact about the device or its software/hardware (a version number, a safety class, a baud rate, a range, etc.) - extract it even when it looks like a simple header field rather than a technical parameter; do not extract it as "Device" or another type just because a device name happens to be nearby.
+
+Some tables are TRANSPOSED: the column headers name categories, and each row's LAST cell is a label describing what that row's values under those headers mean - the label is not attached to a single column, it applies once per column. For example, given:
+| Driver Software | GUI Software |  |
+| --- | --- | --- |
+| 01 | 7.0.0.7650 | Software Version |
+combine each column's header with the trailing row label to form one Specification per column: {{"type": "Specification", "value": "Driver Software Version: 01"}} and {{"type": "Specification", "value": "GUI Software Version: 7.0.0.7650"}}. Do not extract the bare row label ("Software Version") or a bare cell value ("01") on its own when this pattern applies - combine them.
 
 If no entities of the allowed types are present in the text, respond with an empty array: []"""
 

@@ -591,3 +591,163 @@ def test_malformed_llm_json_does_not_crash(_db_session, monkeypatch):
                 await db.commit()
 
         loop.run_until_complete(_cleanup())
+
+
+def test_specification_key_groups_by_label_before_separator():
+    from services.document_diff_planner import _specification_key
+
+    assert _specification_key("GUI Software Version: 7.0.0.7650") == "gui software version"
+    assert _specification_key("GUI Software Version: 8.1.0.1000") == "gui software version"
+    assert _specification_key("Driver Software Version = 01") == "driver software version"
+    # no recognized separator at all -> None, not a fallback key - see
+    # test_specification_key_bare_label_does_not_collide_with_real_key below
+    # for why a fallback used to be wrong
+    assert _specification_key("Max Power 8 W") is None
+
+
+def test_specification_key_bare_label_does_not_collide_with_real_key():
+    """Regression test for a real false positive found testing against the
+    VL8 golden fixture: a bare label with no separator ("Duty Cycle")
+    must not produce a key at all, because an earlier version fell back
+    to the whole lowercased value as its own "key" - which happened to be
+    IDENTICAL to the derived key of a completely unrelated, separator-
+    having value ("Duty Cycle: Adjustable from 5% to 100%..." also
+    normalizes to "duty cycle"), flagging two unrelated extractions as a
+    contradiction.
+    """
+    from services.document_diff_planner import _specification_key
+
+    assert _specification_key("Duty Cycle") is None
+    assert _specification_key("Duty Cycle: Adjustable from 5% to 100% in 5% increments.") == (
+        "duty cycle"
+    )
+
+
+def test_specification_key_rejects_generic_single_word_key():
+    """Regression test for the other real false positive: "Power" recurs
+    across unrelated facts in the same document (a table's byte-field
+    description, an actual output-power limit, ...) - too generic a label
+    to trust as identifying "the same spec", so it must not form a key at
+    all (same _MIN_ANCHOR_LEN-style specificity threshold as the table
+    guardrail above)."""
+    from services.document_diff_planner import _specification_key
+
+    assert _specification_key("Power: up to 8 watts") is None
+    assert _specification_key("Power: Value of output Power (W) for each wavelength") is None
+
+
+def test_check_ontology_consistency_flags_conflicting_specification_values(_db_session):
+    loop, session_factory = _db_session
+
+    from models.device import Device
+    from models.ontology import OntologyEntity
+    from services.document_diff_planner import check_ontology_consistency
+    from sqlalchemy import delete
+
+    device_id = uuid.uuid4()
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(Device(id=device_id, name="Test Device", document_code="TST-ONTO-CONSISTENCY-1"))
+            await db.flush()
+            db.add_all(
+                [
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="GUI Software Version: 7.0.0.7650",
+                    ),
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="GUI Software Version: 8.1.0.1000",
+                    ),
+                    # a different, non-conflicting spec - must not be flagged
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="Driver Software Version: 01",
+                    ),
+                    # a bare label with no separator alongside an unrelated
+                    # separator-having value that happens to start with the
+                    # same word - must NOT be flagged (real false positive
+                    # found against the VL8 golden fixture)
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="Duty Cycle",
+                    ),
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="Duty Cycle: Adjustable from 5% to 100% in 5% increments.",
+                    ),
+                    # a generic single-word label repeated for unrelated
+                    # facts - must NOT be flagged (the other real false
+                    # positive found against the same fixture)
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="Power: up to 8 watts",
+                    ),
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="Power: Value of output Power (W) for each wavelength",
+                    ),
+                    # a different entity_type entirely - must be ignored
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Device", value="VL8",
+                    ),
+                ]
+            )
+            await db.commit()
+            return await check_ontology_consistency(db, device_id)
+
+    try:
+        issues = loop.run_until_complete(_run())
+        assert len(issues) == 1
+        issue = issues[0]
+        assert issue.entity_type == "Specification"
+        assert issue.key == "gui software version"
+        assert issue.values == (
+            "GUI Software Version: 7.0.0.7650",
+            "GUI Software Version: 8.1.0.1000",
+        )
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(delete(OntologyEntity).where(OntologyEntity.device_id == device_id))
+                await db.execute(delete(Device).where(Device.id == device_id))
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
+
+
+def test_check_ontology_consistency_returns_empty_when_no_conflict(_db_session):
+    loop, session_factory = _db_session
+
+    from models.device import Device
+    from models.ontology import OntologyEntity
+    from services.document_diff_planner import check_ontology_consistency
+    from sqlalchemy import delete
+
+    device_id = uuid.uuid4()
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(Device(id=device_id, name="Test Device", document_code="TST-ONTO-CONSISTENCY-2"))
+            await db.flush()
+            db.add(
+                OntologyEntity(
+                    id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                    value="GUI Software Version: 7.0.0.7650",
+                )
+            )
+            await db.commit()
+            return await check_ontology_consistency(db, device_id)
+
+    try:
+        issues = loop.run_until_complete(_run())
+        assert issues == []
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(delete(OntologyEntity).where(OntologyEntity.device_id == device_id))
+                await db.execute(delete(Device).where(Device.id == device_id))
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
