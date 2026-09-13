@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass
 
 from agent.llm import LLMClient, get_llm_client
+from models.device_document import DeviceDocument
 from models.ontology import OntologyEntity
 from models.template import DocumentTemplate
 from rag.reference_bge_embedding import find_matching_device_chunks
@@ -69,6 +70,26 @@ class SectionPlan:
     new_paragraphs: list[str] | None = None
     new_table_markdown: str | None = None
     best_similarity: float | None = None
+
+
+@dataclass
+class DocumentPlan:
+    """build_document_plan()'s full result: the per-section change plan,
+    plus any ontology consistency warnings (see check_ontology_consistency
+    below) for the device the device_document belongs to - surfaced here,
+    alongside the plan itself, so a reviewer sees a contradiction like a
+    mismatched GUI software version in the same place they review the
+    plan, not only by separately calling the read-only
+    GET /devices/{device_id}/ontology/consistency endpoint.
+
+    ontology_warnings is empty whenever ontology extraction hasn't been
+    run for this device yet - it does NOT mean the device's documents
+    have no inconsistencies, only that none have been found among
+    whatever has been extracted so far. See check_ontology_consistency's
+    own docstring for that same caveat.
+    """
+    section_plans: list[SectionPlan]
+    ontology_warnings: list["OntologyInconsistency"]
 
 
 def _strip_json_fences(text: str) -> str:
@@ -311,9 +332,12 @@ async def build_document_plan(
     llm: LLMClient | None = None,
     k: int = 5,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-) -> list[SectionPlan]:
+) -> DocumentPlan:
     """Build a change plan for every section of one reference document
-    against one device document, in section order."""
+    against one device document, in section order, plus any ontology
+    consistency warnings for the device this device_document belongs to -
+    see DocumentPlan's docstring above for why the two are returned
+    together."""
     result = await db.execute(
         select(DocumentTemplate)
         .where(DocumentTemplate.source_doc_id == reference_id)
@@ -328,7 +352,19 @@ async def build_document_plan(
             db, section, device_document_id, llm, k=k, similarity_threshold=similarity_threshold
         )
         plans.append(plan)
-    return plans
+
+    # Fail-soft, same spirit as ontology_extraction_service.py: an unknown
+    # or not-yet-ontology-extracted device_document_id must never break
+    # plan generation - it just means no warnings are available yet.
+    ontology_warnings: list[OntologyInconsistency] = []
+    device_result = await db.execute(
+        select(DeviceDocument.device_id).where(DeviceDocument.id == device_document_id)
+    )
+    device_id = device_result.scalar_one_or_none()
+    if device_id is not None:
+        ontology_warnings = await check_ontology_consistency(db, device_id)
+
+    return DocumentPlan(section_plans=plans, ontology_warnings=ontology_warnings)
 
 
 @dataclass(frozen=True)

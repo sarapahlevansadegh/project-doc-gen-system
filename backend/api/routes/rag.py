@@ -172,9 +172,20 @@ class SectionPlanOut(BaseModel):
     best_similarity: float | None
 
 
+class OntologyWarningOut(BaseModel):
+    entity_type: str
+    key: str
+    values: list[str]
+
+
+class DocumentPlanOut(BaseModel):
+    section_plans: list[SectionPlanOut]
+    ontology_warnings: list[OntologyWarningOut]
+
+
 @rag_router.get(
     "/reference/{reference_id}/plan",
-    response_model=list[SectionPlanOut],
+    response_model=DocumentPlanOut,
 )
 async def get_document_plan(
     reference_id: uuid.UUID,
@@ -184,25 +195,34 @@ async def get_document_plan(
 ):
     """Phase 4: build (but do not apply) a section-by-section change plan
     for generating a device-specific document from this reference document
-    and device document. Does not touch the reference .docx - see
-    services/document_diff_planner.py. Applying the plan to produce an
-    actual output document is a later step.
+    and device document, plus any ontology consistency warnings (e.g. a
+    GUI software version stated inconsistently across the device's
+    documents) found for the device along the way - see
+    services/document_diff_planner.build_document_plan. Does not touch
+    the reference .docx. Applying the plan to produce an actual output
+    document is a later step.
     """
-    plans = await build_document_plan(db, reference_id, device_document_id)
-    if not plans:
+    plan = await build_document_plan(db, reference_id, device_document_id)
+    if not plan.section_plans:
         raise HTTPException(status_code=404, detail="Reference document has no sections")
-    return [
-        SectionPlanOut(
-            section_id=p.section_id,
-            section_name=p.section_name,
-            changed=p.changed,
-            reason=p.reason,
-            new_paragraphs=p.new_paragraphs,
-            new_table_markdown=p.new_table_markdown,
-            best_similarity=p.best_similarity,
-        )
-        for p in plans
-    ]
+    return DocumentPlanOut(
+        section_plans=[
+            SectionPlanOut(
+                section_id=p.section_id,
+                section_name=p.section_name,
+                changed=p.changed,
+                reason=p.reason,
+                new_paragraphs=p.new_paragraphs,
+                new_table_markdown=p.new_table_markdown,
+                best_similarity=p.best_similarity,
+            )
+            for p in plan.section_plans
+        ],
+        ontology_warnings=[
+            OntologyWarningOut(entity_type=w.entity_type, key=w.key, values=list(w.values))
+            for w in plan.ontology_warnings
+        ],
+    )
 
 
 @rag_router.get("/reference/active", response_model=ReferenceOut | None)

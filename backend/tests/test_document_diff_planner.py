@@ -751,3 +751,142 @@ def test_check_ontology_consistency_returns_empty_when_no_conflict(_db_session):
                 await db.commit()
 
         loop.run_until_complete(_cleanup())
+
+
+def test_build_document_plan_includes_ontology_warnings_for_the_device(_db_session):
+    """build_document_plan() must surface ontology consistency warnings for
+    the device_document's device alongside the section plans themselves -
+    not just via the separate GET /devices/{device_id}/ontology/consistency
+    endpoint. Uses an empty-content reference section so build_section_plan
+    skips the LLM entirely (see test_empty_section_skips_llm above) -
+    this test is only about the ontology_warnings wiring, not plan quality.
+    """
+    loop, session_factory = _db_session
+
+    from models.device import Device
+    from models.device_document import DeviceDocument
+    from models.ontology import OntologyEntity
+    from models.template import DocumentTemplate, ReferenceDocument
+    from services.document_diff_planner import build_document_plan
+    from sqlalchemy import delete
+
+    device_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    reference_id = uuid.uuid4()
+    ref_section_id = uuid.uuid4()
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(Device(id=device_id, name="Test Device", document_code="TST-ONTO-PLAN-1"))
+            db.add(
+                DeviceDocument(
+                    id=document_id, device_id=device_id, filename="d.docx",
+                    storage_path="/tmp/d.docx", file_size=1,
+                )
+            )
+            db.add(
+                ReferenceDocument(
+                    id=reference_id, filename="r.docx", template_name="r",
+                    embedding_model="BAAI/bge-base-en-v1.5", embedding_dimension=EMBED_DIM,
+                )
+            )
+            await db.flush()
+
+            db.add(
+                DocumentTemplate(
+                    id=ref_section_id, template_name="r", source_doc_id=reference_id,
+                    section_name="Intro", section_order=1, content="",
+                )
+            )
+            db.add_all(
+                [
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="GUI Software Version: 7.0.0.7650",
+                    ),
+                    OntologyEntity(
+                        id=uuid.uuid4(), device_id=device_id, entity_type="Specification",
+                        value="GUI Software Version: 8.1.0.1000",
+                    ),
+                ]
+            )
+            await db.commit()
+
+            return await build_document_plan(db, reference_id, document_id)
+
+    try:
+        plan = loop.run_until_complete(_run())
+
+        assert len(plan.section_plans) == 1
+        assert plan.section_plans[0].section_name == "Intro"
+        assert plan.section_plans[0].changed is False  # empty content -> untouched
+
+        assert len(plan.ontology_warnings) == 1
+        assert plan.ontology_warnings[0].key == "gui software version"
+        assert plan.ontology_warnings[0].values == (
+            "GUI Software Version: 7.0.0.7650",
+            "GUI Software Version: 8.1.0.1000",
+        )
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(delete(OntologyEntity).where(OntologyEntity.device_id == device_id))
+                await db.execute(delete(DocumentTemplate).where(DocumentTemplate.id == ref_section_id))
+                await db.execute(
+                    delete(ReferenceDocument).where(ReferenceDocument.id == reference_id)
+                )
+                await db.execute(delete(DeviceDocument).where(DeviceDocument.id == document_id))
+                await db.execute(delete(Device).where(Device.id == device_id))
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
+
+
+def test_build_document_plan_ontology_warnings_empty_when_device_document_unknown(_db_session):
+    """Fail-soft regression test: a device_document_id that doesn't
+    resolve to any DeviceDocument row (e.g. deleted, or a bad id) must
+    not crash plan generation - it just means no ontology warnings are
+    available, same fail-soft spirit as ontology_extraction_service.py."""
+    loop, session_factory = _db_session
+
+    from models.template import DocumentTemplate, ReferenceDocument
+    from services.document_diff_planner import build_document_plan
+    from sqlalchemy import delete
+
+    reference_id = uuid.uuid4()
+    ref_section_id = uuid.uuid4()
+    unknown_document_id = uuid.uuid4()
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(
+                ReferenceDocument(
+                    id=reference_id, filename="r.docx", template_name="r",
+                    embedding_model="BAAI/bge-base-en-v1.5", embedding_dimension=EMBED_DIM,
+                )
+            )
+            await db.flush()
+            db.add(
+                DocumentTemplate(
+                    id=ref_section_id, template_name="r", source_doc_id=reference_id,
+                    section_name="Intro", section_order=1, content="",
+                )
+            )
+            await db.commit()
+
+            return await build_document_plan(db, reference_id, unknown_document_id)
+
+    try:
+        plan = loop.run_until_complete(_run())
+        assert len(plan.section_plans) == 1
+        assert plan.ontology_warnings == []
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(delete(DocumentTemplate).where(DocumentTemplate.id == ref_section_id))
+                await db.execute(
+                    delete(ReferenceDocument).where(ReferenceDocument.id == reference_id)
+                )
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
