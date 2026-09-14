@@ -141,12 +141,12 @@ _MIN_ANCHOR_LEN = 4
 
 def _sanitize_table_against_hallucination(
     reference_content: str, new_table_markdown: str, matches: list[dict]
-) -> tuple[str, int]:
+) -> tuple[str | None, int]:
     """Revert any changed table cell that isn't verifiably backed by the
     device document, checked per-row rather than against the whole device
     excerpts blob at once.
 
-    Three guardrail attempts, three real failure modes found by testing
+    Four guardrail attempts, four real failure modes found by testing
     against the actual reference + device documents:
 
     1. Prompt wording alone ("never infer/guess") was not reliable: the
@@ -179,14 +179,36 @@ def _sanitize_table_against_hallucination(
     reference row at all (e.g. the device document only discusses it in
     prose, not a table).
 
-    Returns (sanitized_markdown, reverted_cell_count). If the reference
-    and new table shapes don't line up (row/column count mismatch),
-    returns the new table unchanged; that's a case needing human review,
-    not something this cell-level check can safely correct on its own.
+    4. A reference section with NO table at all (pure prose) still got a
+       fully fabricated new_table_markdown accepted verbatim: the shape/
+       row-count check below only fires when BOTH sides have a table to
+       compare, so a None on the reference side (nothing to anchor against)
+       fell through untouched. Seen in practice as the device document's
+       own "Errors and Warnings" table getting pasted into three unrelated
+       architecture-prose sections that have no table in the reference.
+       Fix: reject new_table_markdown outright (never partially accept it)
+       whenever the reference section itself has no table - there is no
+       valid "same row/column structure as the reference" for the model to
+       have followed in that case.
+
+    Returns (sanitized_markdown, reverted_cell_count). sanitized_markdown
+    is None (full rejection, not a partial edit) when the reference section
+    has no table for the new one to be anchored against - reverted_cell_count
+    is -1 in that case specifically, to distinguish "rejected outright" from
+    "0 cells needed reverting". If the reference and new table shapes don't
+    line up (row/column count mismatch) despite the reference having some
+    table, returns the new table unchanged; that's a case needing human
+    review, not something this cell-level check can safely correct on its
+    own.
     """
     orig_rows = _extract_markdown_table(reference_content)
     new_rows = _extract_markdown_table(new_table_markdown)
-    if orig_rows is None or new_rows is None:
+    if orig_rows is None:
+        # Nothing in the reference section to anchor a table against at
+        # all - accepting any table here, sanitized or not, would mean
+        # inventing table structure the reference never had.
+        return None, -1
+    if new_rows is None:
         return new_table_markdown, 0
     if len(orig_rows) != len(new_rows) or any(
         len(r1) != len(r2) for r1, r2 in zip(orig_rows, new_rows)
@@ -308,7 +330,12 @@ async def build_section_plan(
         new_table_markdown, reverted = _sanitize_table_against_hallucination(
             section.content, new_table_markdown, matches
         )
-        if reverted:
+        if reverted == -1:
+            reason += (
+                " [table rejected - the reference section has no table for "
+                "the model's replacement to be anchored against]"
+            )
+        elif reverted:
             reason += (
                 f" [{reverted} table cell(s) reverted to the reference value - "
                 "the model's replacement wasn't traceable to the device document]"

@@ -208,6 +208,38 @@ def test_sanitize_table_shape_mismatch_passes_through_unchanged():
     assert sanitized == restructured
 
 
+def test_sanitize_table_rejected_when_reference_section_has_no_table():
+    """Reproduces the failure seen against the real VL8 documents: three
+    prose-only architecture sections (no table in the reference at all)
+    each got the device document's own "Errors and Warnings" table pasted
+    in verbatim as new_table_markdown. There is no reference table to
+    anchor row/column comparisons against, so the only safe outcome is
+    full rejection - never a partial accept."""
+    from services.document_diff_planner import _sanitize_table_against_hallucination
+
+    original = (
+        "According to general system architecture, interaction control "
+        "logic defines the procedures through which the user interacts "
+        "with the device."
+    )
+    fabricated_table = (
+        "| No. | Priority | Alarm/Warning Condition | Indicator Light |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | High | Tapping Start Button | Color: Red |\n"
+    )
+    device_chunk = (
+        "Errors and Warnings Display\n\n" + fabricated_table
+    )
+    matches = [{"chunk_text": device_chunk, "similarity": 0.9}]
+
+    sanitized, reverted = _sanitize_table_against_hallucination(
+        original, fabricated_table, matches
+    )
+
+    assert sanitized is None
+    assert reverted == -1
+
+
 def test_empty_section_skips_llm(_db_session):
     loop, session_factory = _db_session
     from models.template import DocumentTemplate, ReferenceDocument
