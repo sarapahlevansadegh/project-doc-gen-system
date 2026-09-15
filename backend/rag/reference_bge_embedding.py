@@ -17,27 +17,21 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def find_matching_device_chunks(
+async def find_matching_device_chunks_by_embedding(
     db: AsyncSession,
-    reference_section_id: uuid.UUID,
+    embedding: list[float],
     device_document_id: uuid.UUID,
     k: int = 5,
 ) -> list[dict]:
-    """For one reference section, find its k most similar chunks within a
-    specific device document, via cosine distance in the shared bge-base
-    vector space. Returns [] if the reference section has no embedding yet
-    (shouldn't normally happen - store_sections() embeds on upload).
-
-    Scoped to a single device_document_id rather than searching across all
-    device documents - the Phase 4 workflow always compares one reference
-    document against one specific device document at a time, not against
-    every device document ever uploaded.
+    """Same cosine-distance search as find_matching_device_chunks, but
+    takes the query embedding directly instead of a reference_section_id
+    to look up. Lets a caller match against text that has no
+    document_templates row of its own - e.g.
+    services/document_generator.py building a plan for a section's full,
+    unsplit text (recombined from live docx blocks) rather than the
+    RAG-chunked-for-embedding rows actually stored in the DB.
     """
-    ref_row = await db.get(DocumentTemplate, reference_section_id)
-    if ref_row is None or ref_row.embedding is None:
-        return []
-
-    embedding_str = f"[{','.join(map(str, ref_row.embedding))}]"
+    embedding_str = f"[{','.join(map(str, embedding))}]"
     sql = text(
         """
         SELECT id, chunk_text, chunk_index, figure_refs,
@@ -65,5 +59,30 @@ async def find_matching_device_chunks(
             "figure_refs": row.figure_refs,
             "similarity": row.similarity,
         }
-        for row in result.fetchall()
+        for row in result
     ]
+
+
+async def find_matching_device_chunks(
+    db: AsyncSession,
+    reference_section_id: uuid.UUID,
+    device_document_id: uuid.UUID,
+    k: int = 5,
+) -> list[dict]:
+    """For one reference section, find its k most similar chunks within a
+    specific device document, via cosine distance in the shared bge-base
+    vector space. Returns [] if the reference section has no embedding yet
+    (shouldn't normally happen - store_sections() embeds on upload).
+
+    Scoped to a single device_document_id rather than searching across all
+    device documents - the Phase 4 workflow always compares one reference
+    document against one specific device document at a time, not against
+    every device document ever uploaded.
+    """
+    ref_row = await db.get(DocumentTemplate, reference_section_id)
+    if ref_row is None or ref_row.embedding is None:
+        return []
+
+    return await find_matching_device_chunks_by_embedding(
+        db, ref_row.embedding, device_document_id, k=k
+    )

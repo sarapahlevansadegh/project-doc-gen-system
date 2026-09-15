@@ -1,23 +1,30 @@
 """Generation job service.
 
 Owns the lifecycle of a document-generation job: create, status updates,
-progress tracking, and invoking the agent workflow. Stores generated
+progress tracking, and invoking the document generator. Stores generated
 sections on the job row so results are resumable/inspectable.
+
+_run_workflow() calls services/document_generator.py (Phase 5's edit-the-
+actual-reference-.docx approach, built on top of
+services/document_diff_planner.py's tested matching/prompt/guardrail
+logic), not the older agent/workflow.py + services/docx_builder.py path.
+That older path rebuilds a document from scratch via free-form LLM
+generation per section (no rule against changing the reference's wording,
+and no preservation of the original file's real Word formatting/tables/
+images) - it's being kept in the codebase in case it's ever useful for a
+different purpose, but this job pipeline no longer calls it.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import traceback
 import uuid
 from datetime import datetime
 
 from agent.llm import GenerateFn, LLMClient
-from agent.workflow import generate_document
 from core.database import AsyncSessionLocal
 from models.document import GeneratedDocument
-from services import docx_builder
-from services.device_service import get_device_data
+from services import document_generator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,30 +127,26 @@ async def run_generation(
 async def _run_workflow(
     db: AsyncSession, job: GeneratedDocument, llm: LLMClient
 ) -> None:
-    """Run the agent workflow for ``job`` and persist progress/result."""
+    """Run document_generator's Phase 5 pipeline for ``job`` and persist
+    progress/result."""
     async def progress_callback(event: dict) -> None:
         await _emit_progress(db, job, event)
 
     try:
-        result = await generate_document(
-            db=db,
-            device_id=str(job.device_id),
-            reference_doc_id=str(job.reference_doc_id),
-            llm_client=llm,
+        result = await document_generator.generate_document_for_job(
+            db,
+            device_id=job.device_id,
+            reference_doc_id=job.reference_doc_id,
+            llm=llm,
             progress_callback=progress_callback,
         )
         job.result_sections = result["sections"]
-        logger.info("Document generation completed: sections=%s", len(job.result_sections))
+        job.file_path = str(result["output_path"])
+        logger.info(
+            "Document generation completed: sections=%s file_path=%s",
+            len(job.result_sections), job.file_path,
+        )
 
-        logger.info("Loading device data for DOCX build")
-        device_data = await get_device_data(db, str(job.device_id))
-        output_data = {"device_data": device_data, "sections": job.result_sections}
-
-        logger.info("Building DOCX document")
-        job.file_path = await asyncio.to_thread(docx_builder.build_document, output_data)
-        logger.info("DOCX built: file_path=%s", job.file_path)
-
-        logger.info("Saving output")
         job.status = "completed"
         job.progress_pct = 100
         job.current_section = None

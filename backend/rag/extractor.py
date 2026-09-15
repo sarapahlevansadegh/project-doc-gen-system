@@ -169,6 +169,90 @@ def _collect_figure(paragraph: Paragraph, counter: list[int]) -> FigureRef | Non
     return FigureRef(index=counter[0], rel_id=rel_id, alt_text=alt)
 
 
+@dataclass
+class LiveSection:
+    """Same heading-bounded grouping as ExtractedSection, but holding the
+    actual live python-docx Paragraph/Table objects instead of extracted
+    text - so a caller can edit them in place and save the same Document.
+
+    Deliberately built by its own traversal (_iter_block_items + the same
+    heading-detection rules as extract_docx), not derived from
+    ExtractedSection/RagSection: those get run through rag/splitter.py's
+    max_chars recursive splitter for embedding purposes, which breaks a
+    large section into overlapping "(part N)" pieces with no clean
+    mapping back to specific paragraphs/table cells. A LiveSection is
+    always exactly one original heading section, never split - the
+    granularity document generation needs, kept separate from the
+    granularity RAG retrieval needs. See services/document_generator.py.
+    """
+
+    heading_path: str
+    title: str
+    level: int
+    blocks: list[Paragraph | Table] = field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        """Same rendering ExtractedSection.body would produce for this
+        section, before any max_chars splitting - i.e. what the LLM
+        should see as "the reference section" when re-planning this
+        section as a whole for final-document generation."""
+        parts: list[str] = []
+        for block in self.blocks:
+            if isinstance(block, Paragraph):
+                if block.text.strip():
+                    parts.append(block.text.strip())
+            elif isinstance(block, Table):
+                parts.append(_table_to_markdown(_table_to_rows(block)))
+        return "\n".join(parts).strip()
+
+
+def extract_docx_live(path: str | Path) -> tuple[DocxDocument, list[LiveSection]]:
+    """Like extract_docx(), but returns the open Document plus sections
+    holding live Paragraph/Table objects instead of extracted text, for
+    services/document_generator.py to edit in place and then save.
+
+    Mirrors extract_docx()'s heading-grouping logic exactly (same
+    _iter_block_items + _heading_level) so a LiveSection's .text matches
+    what extract_docx would have produced for that same heading section
+    before rag/splitter.py's max_chars splitting - see LiveSection's
+    docstring for why that matters.
+    """
+    document = Document(str(path))
+
+    sections: list[LiveSection] = []
+    stack: list[LiveSection] = []
+
+    for block in _iter_block_items(document):
+        if isinstance(block, Paragraph):
+            level = _heading_level(block)
+            if level is not None:
+                sec = LiveSection(heading_path="", title=block.text.strip(), level=level)
+                while stack and stack[-1].level >= sec.level:
+                    stack.pop()
+                if stack and stack[-1].level == 0:
+                    stack.pop()
+                sec.heading_path = (
+                    f"{stack[-1].heading_path} > {sec.title}" if stack else sec.title
+                )
+                stack.append(sec)
+                sections.append(sec)
+                continue
+            if not stack:
+                sec = LiveSection(heading_path="Intro", title="Intro", level=0)
+                sections.append(sec)
+                stack.append(sec)
+            stack[-1].blocks.append(block)
+        elif isinstance(block, Table):
+            if not stack:
+                sec = LiveSection(heading_path="Intro", title="Intro", level=0)
+                sections.append(sec)
+                stack.append(sec)
+            stack[-1].blocks.append(block)
+
+    return document, sections
+
+
 def extract_docx(path: str | Path) -> list[ExtractedSection]:
     """Extract reference document into a list of outline sections."""
     document = Document(str(path))

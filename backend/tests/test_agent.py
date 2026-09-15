@@ -225,76 +225,164 @@ def test_workflow_generates_each_section_with_mocked_llm():
 
 
 def test_job_status_transitions_with_mocked_llm():
-    """Exercise generation_service.run_generation status flow in-memory."""
-
+    """generation_service.run_generation() now drives
+    services/document_generator.py (Phase 5), which opens a real reference
+    .docx and queries real device_documents/document_chunks rows - unlike
+    the old agent/workflow.py path this replaced, it can't be driven by
+    the in-memory _FakeSession above. DB- and file-backed instead; skips
+    cleanly if Postgres isn't reachable.
+    """
     import asyncio
+    import uuid as uuid_mod
+    from pathlib import Path
 
-    from services import generation_service
+    try:
+        from core.database import AsyncSessionLocal
+        from docx import Document as DocxDocument
+        from models.device import Device
+        from models.device_document import DeviceDocument
+        from models.template import ReferenceDocument
+        from services import generation_service
+        from sqlalchemy import text
+    except ModuleNotFoundError:
+        pytest.skip("async app stack unavailable")
 
-    class _FakeJob:
+    async def _run(tmp_path):
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT 1"))  # raises if Postgres is unreachable
 
-        id = uuid.uuid4()
-        status = "pending"
-        progress_pct = 0
-        current_section = None
-        result_sections = None
-        error_message = None
-        completed_at = None
-        device_id = uuid.uuid4()
-        reference_doc_id = uuid.uuid4()
+        ref_docx = tmp_path / "reference.docx"
+        doc = DocxDocument()
+        doc.add_heading("1. Architecture of Software", level=1)
+        doc.add_paragraph("Generic architecture description with no device specifics.")
+        doc.save(str(ref_docx))
 
-    job = _FakeJob()
-    session = _FakeSession(_make_sections())
+        device_id = uuid_mod.uuid4()
+        reference_doc_id = uuid_mod.uuid4()
+        device_document_id = uuid_mod.uuid4()
 
-    async def _run():
-        await generation_service.run_generation(
-            job_id="00000000-0000-0000-0000-000000000000",
-            generate_fn=_fake_llm,
-            db_factory=lambda: session,
-            job=job,
-        )
+        async with AsyncSessionLocal() as db:
+            db.add(Device(id=device_id, name="VL8", safety_class="B"))
+            db.add(
+                ReferenceDocument(
+                    id=reference_doc_id,
+                    filename="reference.docx",
+                    template_name="reference",
+                    storage_path=str(ref_docx),
+                    embedding_model="bge-base-en-v1.5",
+                    embedding_dimension=768,
+                )
+            )
+            db.add(
+                DeviceDocument(
+                    id=device_document_id,
+                    device_id=device_id,
+                    filename="device.docx",
+                    storage_path=str(tmp_path / "device.docx"),
+                    file_size=1,
+                )
+            )
+            await db.commit()
 
-    asyncio.run(_run())
+        class _FakeJob:
+            id = uuid_mod.uuid4()
+            status = "pending"
+            progress_pct = 0
+            current_section = None
+            result_sections = None
+            error_message = None
+            completed_at = None
+
+        job = _FakeJob()
+        job.device_id = device_id
+        job.reference_doc_id = reference_doc_id
+
+        try:
+            await generation_service.run_generation(
+                job_id=str(job.id),
+                generate_fn=_fake_llm,
+                db_factory=AsyncSessionLocal,
+                job=job,
+            )
+        finally:
+            async with AsyncSessionLocal() as db:
+                dev = await db.get(Device, device_id)
+                if dev is not None:
+                    await db.delete(dev)
+                ref = await db.get(ReferenceDocument, reference_doc_id)
+                if ref is not None:
+                    await db.delete(ref)
+                await db.commit()
+
+        return job
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            job = asyncio.run(_run(Path(tmp)))
+        except Exception as exc:
+            if "connect" in str(exc).lower():
+                pytest.skip("Postgres unavailable")
+            raise
+
     assert job.status == "completed"
     assert job.progress_pct == 100
     assert job.result_sections is not None
-    assert "1.1 LCD Module" in job.result_sections
+    assert "Intro" in job.result_sections or "1. Architecture of Software" in job.result_sections
+    assert job.file_path and Path(job.file_path).is_file()
+    Path(job.file_path).unlink(missing_ok=True)
 
 
 def test_failure_handling_sets_failed_status():
-    def _boom(prompt, max_tokens, temperature):
-        raise RuntimeError("LLM outage")
-
+    """A nonexistent reference_doc_id is a simple, deterministic way to
+    force services/document_generator.py to fail (it raises ValueError
+    before touching any file), exercising the same status='failed' +
+    error_message path the old LLM-outage version of this test covered.
+    """
     import asyncio
+    import uuid as uuid_mod
 
-    from services import generation_service
+    try:
+        from core.database import AsyncSessionLocal
+        from services import generation_service
+        from sqlalchemy import text
+    except ModuleNotFoundError:
+        pytest.skip("async app stack unavailable")
 
     class _FakeJob:
-        id = uuid.uuid4()
+        id = uuid_mod.uuid4()
         status = "pending"
         progress_pct = 0
         current_section = None
         result_sections = None
         error_message = None
         completed_at = None
-        device_id = uuid.uuid4()
-        reference_doc_id = uuid.uuid4()
+        device_id = uuid_mod.uuid4()
+        reference_doc_id = uuid_mod.uuid4()  # deliberately doesn't exist
 
     job = _FakeJob()
-    session = _FakeSession(_make_sections())
 
     async def _run():
-        await generation_service.run_generation(
-            job_id="00000000-0000-0000-0000-000000000000",
-            generate_fn=_boom,
-            db_factory=lambda: session,
-            job=job,
-        )
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+        with pytest.raises(ValueError):
+            await generation_service.run_generation(
+                job_id=str(job.id),
+                generate_fn=_fake_llm,
+                db_factory=AsyncSessionLocal,
+                job=job,
+            )
 
-    with pytest.raises(RuntimeError):
+    try:
         asyncio.run(_run())
+    except Exception as exc:
+        if "connect" in str(exc).lower():
+            pytest.skip("Postgres unavailable")
+        raise
+
     assert job.status == "failed"
-    assert "LLM outage" in job.error_message
+    assert "not found" in job.error_message
 
 
 # ---------- DB-gated API tests ----------

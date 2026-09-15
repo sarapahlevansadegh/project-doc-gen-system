@@ -4,20 +4,29 @@ Exercises the full API flow with no real LLM or embedding model:
   1. Create a Device
   2. Upload a reference .docx (RAG extraction + embedding stored)
   3. Verify reference + RAG sections persisted
-  4. Start document generation
-  5. Verify background job lifecycle
-  6. Connect to WebSocket progress and verify payload
-  7. Wait until generation completes
-  8. Download the generated DOCX
-  9. Verify the file exists and is a valid .docx
+  4. Upload a device .docx (sections + chunks + ontology, now automatic)
+  5. Start document generation
+  6. Verify background job lifecycle
+  7. Connect to WebSocket progress and verify payload
+  8. Wait until generation completes
+  9. Download the generated DOCX
+  10. Verify the file exists and is a valid .docx
 
 The real LLM and embedding calls are replaced with deterministic
 implementations via monkeypatch (same spirit as the mocked-LLM tests in
 test_agent.py) so the journey runs hermetically against Postgres.
+
+Step 4 (device document upload) is not optional here: services/
+document_generator.py - what /documents/generate now actually runs, see
+services/generation_service.py - needs a real device_document_id to match
+against, unlike the older agent/workflow.py path this journey used to
+exercise, which could generate from a bare Device row's own specs/alarms/
+commands fields alone with no uploaded document at all.
 """
 from __future__ import annotations
 
 import io
+import json
 import time
 
 import pytest
@@ -37,17 +46,36 @@ EMBED_DIM = 768  # matches settings.embed_dimension / BAAI/bge-base-en-v1.5 (Pha
 
 
 def _fake_llm(self, prompt: str, max_tokens: int, temperature: float) -> str:
-    lower = prompt.lower()
-    if "lcd module" in lower:
-        return "LCD Module: 7-inch touch LCD showing status and alerts."
-    if "serial communication" in lower:
-        return "Serial Communication: RS-232 at 115200 baud."
-    return "Generated section content for the requested topic."
+    # ontology/extractor.py's relationship prompt always embeds "ENTITIES:"
+    if "ENTITIES:" in prompt:
+        return "[]"
+    # services/document_diff_planner.py's section prompt (used by both the
+    # /plan endpoint and services/document_generator.py) always includes
+    # this heading, and always wants a JSON object back - deterministically
+    # "no change" here since this journey only checks the job lifecycle
+    # and download work, not particular replaced content (that's
+    # test_document_diff_planner.py's and test_document_generator.py's job).
+    if "REFERENCE SECTION" in prompt:
+        return json.dumps(
+            {
+                "changed": False,
+                "reason": "journey test stub - no device-specific replacement",
+                "new_paragraphs": None,
+                "new_table_markdown": None,
+            }
+        )
+    # ontology entity-extraction prompt
+    return "[]"
 
 
 async def _fake_embed(text: str) -> list[float]:
-    # deterministic fixed-dimension vector (matches Vector(384) column)
+    # deterministic fixed-dimension vector (matches Vector(768) column)
     return [0.0] * EMBED_DIM
+
+
+class _FakeDeviceEmbeddingService:
+    def embed_documents(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
+        return [[0.0] * EMBED_DIM for _ in texts]
 
 
 def _make_reference_docx() -> bytes:
@@ -65,12 +93,23 @@ def _make_reference_docx() -> bytes:
     return buf.getvalue()
 
 
+def _make_device_docx() -> bytes:
+    doc = DocxDocument()
+    doc.add_heading("1. Architecture of Software", level=1)
+    doc.add_paragraph("The VL8 device runs a layered software architecture.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def test_end_to_end_user_journey():
     try:
         from agent.llm import LLMClient
         from app import app
         from fastapi.testclient import TestClient
+        from rag import chunk_service
         from rag import retriever as rag_retriever
+        from services import document_generator
     except ModuleNotFoundError:
         pytest.skip("async app stack / TestClient unavailable")
 
@@ -104,24 +143,14 @@ def test_end_to_end_user_journey():
             client.headers.update(login_headers_sync(client, *admin_creds))
             monkeypatch_llm = _Monkey(client, LLMClient, "generate", _fake_llm)
             monkeypatch_emb = _Monkey(client, rag_retriever, "embed_text", _fake_embed)
+            monkeypatch_gen_emb = _Monkey(client, document_generator, "embed_text", _fake_embed)
+            monkeypatch_device_emb = _Monkey(
+                client, chunk_service, "get_device_embedding_service",
+                lambda: _FakeDeviceEmbeddingService(),
+            )
 
-            with monkeypatch_llm, monkeypatch_emb:
-                # 1. Create a Device
-                dev_resp = client.post(
-                    "/devices",
-                    json={
-                        "name": "VL8",
-                        "model": "VL8",
-                        "document_code": "15799",
-                        "safety_class": "B",
-                        "driver_version": "01",
-                        "gui_version": "7.0.0.1",
-                    },
-                )
-                assert dev_resp.status_code == 201, dev_resp.text
-                device_id = dev_resp.json()["id"]
-
-                # 2. Upload a reference document (RAG extraction + embedding)
+            with monkeypatch_llm, monkeypatch_emb, monkeypatch_gen_emb, monkeypatch_device_emb:
+                # 1. Upload a reference document (RAG extraction + embedding)
                 docx_bytes = _make_reference_docx()
                 ref_resp = client.post(
                     "/rag/reference",
@@ -132,12 +161,30 @@ def test_end_to_end_user_journey():
                 reference_id = ref_json["id"]
                 assert ref_json["section_count"] >= 1
 
-                # 3. Verify reference + RAG sections stored
+                # 2. Verify reference + RAG sections stored
                 sections_resp = client.get(f"/rag/reference/{reference_id}/sections")
                 assert sections_resp.status_code == 200
                 sections = sections_resp.json()
                 assert len(sections) >= 1
                 assert any(s["section_name"] for s in sections)
+
+                # 3. Upload a device document - this both creates the
+                # Device (POST /devices/documents always creates a new one,
+                # named after the file - there's no "attach to an existing
+                # device_id" form field) and, now, automatically generates
+                # its sections + chunks + ontology.
+                dev_doc_resp = client.post(
+                    "/devices/documents",
+                    files={
+                        "file": (
+                            "device.docx",
+                            _make_device_docx(),
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+                    },
+                )
+                assert dev_doc_resp.status_code == 201, dev_doc_resp.text
+                device_id = dev_doc_resp.json()["id"]
 
                 # 4. Start document generation
                 gen_resp = client.post(
@@ -150,7 +197,7 @@ def test_end_to_end_user_journey():
                 assert gen_resp.status_code == 202, gen_resp.text
                 job_id = gen_resp.json()["job_id"]
 
-                # 5 + 7. Verify background job lifecycle + wait until complete
+                # 5. Verify background job lifecycle + wait until complete
                 final_status = None
                 for _ in range(100):  # up to ~20s
                     status_resp = client.get(f"/documents/{job_id}")

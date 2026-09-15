@@ -25,7 +25,7 @@ from agent.llm import LLMClient, get_llm_client
 from models.device_document import DeviceDocument
 from models.ontology import OntologyEntity
 from models.template import DocumentTemplate
-from rag.reference_bge_embedding import find_matching_device_chunks
+from rag.reference_bge_embedding import find_matching_device_chunks_by_embedding
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -287,6 +287,14 @@ async def build_section_plan(
     k: int = 5,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> SectionPlan:
+    """`section` only needs `.id`, `.section_name`, `.content`, and
+    `.embedding` populated - it doesn't have to be a persisted
+    DocumentTemplate row. services/document_generator.py passes a
+    synthetic (never-saved) stand-in built from a LiveSection's full,
+    unsplit text so the same matching/prompt/guardrail logic used here for
+    the /plan preview also drives final-document generation, without
+    generation being limited to rag/splitter.py's max_chars-split rows.
+    """
     if not section.content or not section.content.strip():
         return SectionPlan(
             section_id=section.id,
@@ -295,7 +303,9 @@ async def build_section_plan(
             reason="Section has no content to compare",
         )
 
-    matches = await find_matching_device_chunks(db, section.id, device_document_id, k=k)
+    matches = await find_matching_device_chunks_by_embedding(
+        db, section.embedding, device_document_id, k=k
+    )
     best_similarity = matches[0]["similarity"] if matches else None
 
     if not matches or best_similarity < similarity_threshold:
