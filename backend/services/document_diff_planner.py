@@ -279,6 +279,11 @@ def _sanitize_table_against_hallucination(
     return _rebuild_markdown_table(sanitized_rows), reverted
 
 
+_SHORT_SECTION_CHAR_LEN = 50
+_SHORT_SECTION_SIMILARITY_THRESHOLD = 0.75  # stricter than DEFAULT_SIMILARITY_THRESHOLD
+_MAX_REPLACEMENT_LENGTH_RATIO = 3  # replacement text vs reference text
+
+
 async def build_section_plan(
     db: AsyncSession,
     section: DocumentTemplate,
@@ -303,12 +308,24 @@ async def build_section_plan(
             reason="Section has no content to compare",
         )
 
+    # Short/generic reference text (e.g. a single boilerplate sentence like
+    # "No specific requirement is needed.") gives embedding similarity very
+    # little real signal to work with - real testing against the VL8
+    # documents found a one-sentence reference section coincidentally
+    # matching, and then getting wholesale replaced by, a completely
+    # unrelated device-document excerpt. Require substantially stronger
+    # similarity before even offering the LLM a short section's "best"
+    # match at all.
+    effective_threshold = similarity_threshold
+    if len(section.content.strip()) < _SHORT_SECTION_CHAR_LEN:
+        effective_threshold = max(similarity_threshold, _SHORT_SECTION_SIMILARITY_THRESHOLD)
+
     matches = await find_matching_device_chunks_by_embedding(
         db, section.embedding, device_document_id, k=k
     )
     best_similarity = matches[0]["similarity"] if matches else None
 
-    if not matches or best_similarity < similarity_threshold:
+    if not matches or best_similarity < effective_threshold:
         return SectionPlan(
             section_id=section.id,
             section_name=section.section_name,
@@ -335,6 +352,25 @@ async def build_section_plan(
         )
 
     reason = parsed.get("reason", "")
+    new_paragraphs = parsed.get("new_paragraphs")
+    if new_paragraphs:
+        new_len = sum(len(p) for p in new_paragraphs)
+        ref_len = len(section.content)
+        # A genuine value swap keeps the replacement roughly the same size
+        # as the reference text. A replacement several times longer means
+        # the model substituted a whole unrelated block of device-document
+        # text for the section rather than updating specific values in
+        # place within it - reject outright rather than accept content
+        # that was never actually about this section's topic.
+        if ref_len and new_len > ref_len * _MAX_REPLACEMENT_LENGTH_RATIO:
+            reason += (
+                f" [paragraphs rejected - replacement ({new_len} chars) is "
+                f"over {_MAX_REPLACEMENT_LENGTH_RATIO}x the reference section's "
+                f"length ({ref_len} chars), suggesting unrelated content rather "
+                "than an in-place value swap]"
+            )
+            new_paragraphs = None
+
     new_table_markdown = parsed.get("new_table_markdown")
     if new_table_markdown:
         new_table_markdown, reverted = _sanitize_table_against_hallucination(
@@ -356,7 +392,7 @@ async def build_section_plan(
         section_name=section.section_name,
         changed=bool(parsed.get("changed", False)),
         reason=reason,
-        new_paragraphs=parsed.get("new_paragraphs"),
+        new_paragraphs=new_paragraphs,
         new_table_markdown=new_table_markdown,
         best_similarity=best_similarity,
     )

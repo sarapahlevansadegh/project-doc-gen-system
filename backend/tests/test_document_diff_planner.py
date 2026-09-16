@@ -414,6 +414,228 @@ def test_good_match_calls_llm_and_parses_plan(_db_session, monkeypatch):
         loop.run_until_complete(_cleanup())
 
 
+def test_short_section_requires_stricter_similarity_threshold(_db_session):
+    """Reproduces the real failure seen against the VL8 documents: a
+    one-sentence reference section ("No specific requirement is needed.")
+    coincidentally matched, just past the *default* similarity threshold,
+    a completely unrelated device-document excerpt - and got wholesale
+    replaced by it. A section under _SHORT_SECTION_CHAR_LEN chars needs
+    the stricter _SHORT_SECTION_SIMILARITY_THRESHOLD, not the default, so
+    a middling-similarity coincidence like this is rejected instead of
+    reaching the LLM at all.
+    """
+    loop, session_factory = _db_session
+
+    from models.device import Device
+    from models.device_document import DeviceDocument, DeviceDocumentSection
+    from models.template import DocumentTemplate, ReferenceDocument
+    from services.document_diff_planner import build_section_plan
+    from sqlalchemy import delete
+    from models.document_chunk import DocumentChunk
+
+    device_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    section_id = uuid.uuid4()
+    reference_id = uuid.uuid4()
+    ref_section_id = uuid.uuid4()
+
+    # Hand-picked unit vectors so cosine similarity is exactly 0.6 - above
+    # DEFAULT_SIMILARITY_THRESHOLD (0.5) but below
+    # _SHORT_SECTION_SIMILARITY_THRESHOLD (0.75).
+    ref_vec = [1.0] + [0.0] * (EMBED_DIM - 1)
+    chunk_vec = [0.6, 0.8] + [0.0] * (EMBED_DIM - 2)
+
+    fake_llm = _FakeLLM(responses=[])  # must never be called
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(Device(id=device_id, name="Test Device", document_code="TST-7"))
+            db.add(
+                DeviceDocument(
+                    id=document_id, device_id=device_id, filename="d7.docx",
+                    storage_path="/tmp/d7.docx", file_size=1,
+                )
+            )
+            db.add(
+                ReferenceDocument(
+                    id=reference_id, filename="r7.docx", template_name="r7",
+                    embedding_model="BAAI/bge-base-en-v1.5", embedding_dimension=EMBED_DIM,
+                )
+            )
+            await db.flush()
+
+            db.add(
+                DeviceDocumentSection(
+                    id=section_id, document_id=document_id,
+                    section_name="Unrelated GUI Requirements", section_type="text",
+                    heading_level=1, section_order=1,
+                    content="A long, completely unrelated excerpt about GUI usability engineering.",
+                    figure_refs=[],
+                )
+            )
+            await db.flush()
+            db.add(
+                DocumentChunk(
+                    section_id=section_id, device_document_id=document_id,
+                    chunk_text="A long, completely unrelated excerpt about GUI usability engineering.",
+                    chunk_index=0, embedding=chunk_vec,
+                )
+            )
+            ref_section = DocumentTemplate(
+                id=ref_section_id, template_name="r7", source_doc_id=reference_id,
+                section_name="Segregation for Risk Control", section_order=1,
+                content="No specific requirement is needed.", embedding=ref_vec,
+            )
+            db.add(ref_section)
+            await db.commit()
+            await db.refresh(ref_section)
+
+            return await build_section_plan(db, ref_section, document_id, fake_llm)
+
+    try:
+        plan = loop.run_until_complete(_run())
+        assert plan.changed is False
+        assert "No sufficiently similar" in plan.reason
+        assert plan.best_similarity is not None and 0.5 < plan.best_similarity < 0.75
+        assert fake_llm.prompts == []  # never even reached the LLM
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(
+                    delete(DocumentChunk).where(DocumentChunk.device_document_id == document_id)
+                )
+                await db.execute(
+                    delete(DeviceDocumentSection).where(
+                        DeviceDocumentSection.document_id == document_id
+                    )
+                )
+                await db.execute(delete(DeviceDocument).where(DeviceDocument.id == document_id))
+                await db.execute(delete(Device).where(Device.id == device_id))
+                await db.execute(
+                    delete(DocumentTemplate).where(DocumentTemplate.source_doc_id == reference_id)
+                )
+                await db.execute(
+                    delete(ReferenceDocument).where(ReferenceDocument.id == reference_id)
+                )
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
+
+
+def test_oversized_replacement_rejected_as_unrelated_content(_db_session, monkeypatch):
+    """A replacement several times longer than the reference section means
+    the model substituted a whole unrelated block of device-document text
+    rather than updating a specific value in place - reject it rather than
+    accept content that was never actually about this section's topic.
+    """
+    loop, session_factory = _db_session
+
+    from models.device import Device
+    from models.device_document import DeviceDocument, DeviceDocumentSection
+    from models.template import DocumentTemplate, ReferenceDocument
+    from rag import chunk_service
+    from services.document_diff_planner import build_section_plan
+    from sqlalchemy import delete
+    from models.document_chunk import DocumentChunk
+
+    monkeypatch.setattr(
+        chunk_service, "get_device_embedding_service", lambda: _FakeEmbeddingService()
+    )
+    monkeypatch.setattr(chunk_service, "bge_token_counter", lambda: (lambda t: len(t.split())))
+
+    device_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    section_id = uuid.uuid4()
+    reference_id = uuid.uuid4()
+    ref_section_id = uuid.uuid4()
+
+    ref_content = "The device supports calibration via the Settings page."  # 56 chars
+    oversized_replacement = (
+        "The device supports calibration via the Settings page, and in "
+        "addition provides an extensive set of unrelated GUI usability "
+        "engineering requirements per IEC 62366-1 covering iterative "
+        "testing, risk management documentation, and design justification "
+        "activities that have nothing to do with calibration at all, "
+        "going well beyond a simple value substitution for this section."
+    )
+    llm_response = json.dumps(
+        {
+            "changed": True,
+            "reason": "Device document addresses calibration.",
+            "new_paragraphs": [oversized_replacement],
+            "new_table_markdown": None,
+        }
+    )
+    fake_llm = _FakeLLM(responses=[llm_response])
+
+    async def _run():
+        async with session_factory() as db:
+            db.add(Device(id=device_id, name="Test Device", document_code="TST-8"))
+            db.add(
+                DeviceDocument(
+                    id=document_id, device_id=device_id, filename="d8.docx",
+                    storage_path="/tmp/d8.docx", file_size=1,
+                )
+            )
+            db.add(
+                ReferenceDocument(
+                    id=reference_id, filename="r8.docx", template_name="r8",
+                    embedding_model="BAAI/bge-base-en-v1.5", embedding_dimension=EMBED_DIM,
+                )
+            )
+            await db.flush()
+
+            db.add(
+                DeviceDocumentSection(
+                    id=section_id, document_id=document_id,
+                    section_name="Calibration", section_type="text",
+                    heading_level=1, section_order=1,
+                    content="Calibration is available from the Settings page.",
+                    figure_refs=[],
+                )
+            )
+            ref_section = DocumentTemplate(
+                id=ref_section_id, template_name="r8", source_doc_id=reference_id,
+                section_name="Calibration", section_order=1,
+                content=ref_content,
+                embedding=_keyword_vector(ref_content + " calibration"),
+            )
+            db.add(ref_section)
+            await db.commit()
+
+            await chunk_service.generate_and_store_chunks(db, document_id)
+            await db.refresh(ref_section)
+
+            return await build_section_plan(db, ref_section, document_id, fake_llm)
+
+    try:
+        plan = loop.run_until_complete(_run())
+        assert plan.new_paragraphs is None
+        assert "rejected" in plan.reason and "reference section's" in plan.reason
+    finally:
+        async def _cleanup():
+            async with session_factory() as db:
+                await db.execute(
+                    delete(DocumentChunk).where(DocumentChunk.device_document_id == document_id)
+                )
+                await db.execute(
+                    delete(DeviceDocumentSection).where(
+                        DeviceDocumentSection.document_id == document_id
+                    )
+                )
+                await db.execute(delete(DeviceDocument).where(DeviceDocument.id == document_id))
+                await db.execute(delete(Device).where(Device.id == device_id))
+                await db.execute(
+                    delete(DocumentTemplate).where(DocumentTemplate.source_doc_id == reference_id)
+                )
+                await db.execute(
+                    delete(ReferenceDocument).where(ReferenceDocument.id == reference_id)
+                )
+                await db.commit()
+
+        loop.run_until_complete(_cleanup())
+
+
 def test_good_match_with_hallucinated_table_cell_gets_reverted(_db_session, monkeypatch):
     """End-to-end: build_section_plan() itself applies the sanitizer, not
     just the helper function in isolation."""
