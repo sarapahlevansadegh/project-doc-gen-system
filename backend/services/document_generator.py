@@ -22,6 +22,7 @@ addresses text and tables, matching document_diff_planner's own scope.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import uuid
@@ -44,6 +45,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[dict], Awaitable[None]]
+
+
+def _sha256_file(path: str | Path) -> str:
+    """Hex digest of a file's exact bytes on disk, used to pin a generated
+    job's result to the precise reference/device-document content it was
+    built from (see generate_document_for_job)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class _SyntheticSection:
@@ -227,36 +239,40 @@ async def generate_document_for_job(
     db: AsyncSession,
     device_id: uuid.UUID | str,
     reference_doc_id: uuid.UUID | str,
+    device_document_id: uuid.UUID | str,
     llm: LLMClient | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
-    """services/generation_service.py's entry point: resolve the device's
-    most recently uploaded document and the reference document row, then
-    delegate to generate_final_document(). Kept separate from that
-    function so it stays callable directly (e.g. from a script or test)
-    without needing a device_id at all - only a device_document_id.
+    """services/generation_service.py's entry point: load the exact
+    reference and device-document rows the caller pinned this job to, then
+    delegate to generate_final_document(). ``device_document_id`` is
+    required and validated against ``device_id`` here - no implicit
+    "most recently uploaded" resolution: see db/migrations/versions/
+    0012_generation_job_device_document.py for why that was unsafe (a
+    newer upload arriving between job creation and execution could
+    silently redirect generation to the wrong file).
     """
     device_id = uuid.UUID(str(device_id))
     reference_doc_id = uuid.UUID(str(reference_doc_id))
+    device_document_id = uuid.UUID(str(device_document_id))
 
     reference_doc = await db.get(ReferenceDocument, reference_doc_id)
     if reference_doc is None:
         raise ValueError(f"Reference document {reference_doc_id} not found")
 
-    result = await db.execute(
-        select(DeviceDocument)
-        .where(DeviceDocument.device_id == device_id)
-        .order_by(DeviceDocument.created_at.desc())
-        .limit(1)
-    )
-    device_document = result.scalar_one_or_none()
-    if device_document is None:
-        raise ValueError(f"Device {device_id} has no uploaded document to generate from")
+    device_document = await db.get(DeviceDocument, device_document_id)
+    if device_document is None or device_document.device_id != device_id:
+        raise ValueError(
+            f"Device document {device_document_id} not found for device {device_id}"
+        )
 
-    return await generate_final_document(
+    result = await generate_final_document(
         db,
         reference_doc,
         device_document.id,
         llm=llm,
         progress_callback=progress_callback,
     )
+    result["device_document_hash"] = _sha256_file(device_document.storage_path)
+    result["reference_doc_hash"] = _sha256_file(reference_doc.storage_path)
+    return result

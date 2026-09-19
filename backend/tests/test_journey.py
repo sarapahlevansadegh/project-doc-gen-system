@@ -185,6 +185,7 @@ def test_end_to_end_user_journey():
                 )
                 assert dev_doc_resp.status_code == 201, dev_doc_resp.text
                 device_id = dev_doc_resp.json()["id"]
+                device_document_id = dev_doc_resp.json()["documents"][0]["id"]
 
                 # 4. Start document generation
                 gen_resp = client.post(
@@ -192,6 +193,7 @@ def test_end_to_end_user_journey():
                     json={
                         "device_id": device_id,
                         "reference_document_id": reference_id,
+                        "device_document_id": device_document_id,
                     },
                 )
                 assert gen_resp.status_code == 202, gen_resp.text

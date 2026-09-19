@@ -21,6 +21,17 @@ class GeneratedDocument(Base):
         ForeignKey("reference_documents.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Explicit input binding (see db/migrations/versions/
+    # 0012_generation_job_device_document.py): nullable at the DB level for
+    # pre-migration rows, but required by GenerateRequest going forward - no
+    # job created after this migration should have this unset.
+    device_document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("device_documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    device_document_hash: Mapped[str] = mapped_column(String(64), nullable=True)
+    reference_doc_hash: Mapped[str] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(
         String(50), default="pending"
     )  # pending, processing, completed, failed

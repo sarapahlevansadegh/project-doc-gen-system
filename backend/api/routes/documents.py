@@ -10,6 +10,7 @@ from api.deps import get_current_active_user, get_db, require_role
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from models.device import Device
+from models.device_document import DeviceDocument
 from models.document import GeneratedDocument
 from models.template import ReferenceDocument
 from pydantic import BaseModel
@@ -34,6 +35,7 @@ _background_tasks: set[asyncio.Task] = set()
 class GenerateRequest(BaseModel):
     device_id: uuid.UUID
     reference_document_id: uuid.UUID | None = None
+    device_document_id: uuid.UUID
 
 
 class GenerateResponse(BaseModel):
@@ -75,6 +77,15 @@ async def generate_document(
     if device_exists is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
+    device_document_owned = await db.scalar(
+        select(DeviceDocument.id).where(
+            DeviceDocument.id == payload.device_document_id,
+            DeviceDocument.device_id == payload.device_id,
+        )
+    )
+    if device_document_owned is None:
+        raise HTTPException(status_code=404, detail="Device document not found")
+
     ref_id = payload.reference_document_id
     if ref_id is None:
         active = await get_active_reference(db)
@@ -93,7 +104,7 @@ async def generate_document(
             raise HTTPException(status_code=404, detail="Reference document not found")
 
     job = await generation_service.create_job(
-        db, str(payload.device_id), str(ref_id)
+        db, str(payload.device_id), str(ref_id), str(payload.device_document_id)
     )
     # run generation in the background using its OWN session (never the
     # request-scoped session, which is closed after we return 202)

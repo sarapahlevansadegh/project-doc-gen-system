@@ -257,6 +257,13 @@ def test_job_status_transitions_with_mocked_llm():
         doc.add_paragraph("Generic architecture description with no device specifics.")
         doc.save(str(ref_docx))
 
+        # generate_document_for_job now hashes the device document's actual
+        # bytes on disk (see services/document_generator.py's
+        # _sha256_file), so - unlike before this row only needed to exist
+        # in the DB - the file itself must be real too.
+        device_docx = tmp_path / "device.docx"
+        device_docx.write_bytes(b"PK\x03\x04 fake docx content")
+
         device_id = uuid_mod.uuid4()
         reference_doc_id = uuid_mod.uuid4()
         device_document_id = uuid_mod.uuid4()
@@ -278,7 +285,7 @@ def test_job_status_transitions_with_mocked_llm():
                     id=device_document_id,
                     device_id=device_id,
                     filename="device.docx",
-                    storage_path=str(tmp_path / "device.docx"),
+                    storage_path=str(device_docx),
                     file_size=1,
                 )
             )
@@ -296,6 +303,7 @@ def test_job_status_transitions_with_mocked_llm():
         job = _FakeJob()
         job.device_id = device_id
         job.reference_doc_id = reference_doc_id
+        job.device_document_id = device_document_id
 
         try:
             await generation_service.run_generation(
@@ -360,6 +368,7 @@ def test_failure_handling_sets_failed_status():
         completed_at = None
         device_id = uuid_mod.uuid4()
         reference_doc_id = uuid_mod.uuid4()  # deliberately doesn't exist
+        device_document_id = uuid_mod.uuid4()
 
     job = _FakeJob()
 
@@ -446,9 +455,10 @@ async def _run_endpoint_tests():
                 json={
                     "device_id": str(uuid.uuid4()),
                     "reference_document_id": str(uuid.uuid4()),
+                    "device_document_id": str(uuid.uuid4()),
                 },
             )
-            assert resp.status_code in (202, 404)  # 404 if device/ref missing
+            assert resp.status_code in (202, 404)  # 404 if device/ref/document missing
             if resp.status_code == 202:
                 assert "job_id" in resp.json()
 
@@ -494,9 +504,31 @@ async def _run_endpoint_tests():
                 )
                 await db.commit()
 
+            from models.device_document import DeviceDocument
+
+            # generate_document_for_job now requires an explicit
+            # device_document_id (see services/document_generator.py) - seed
+            # one for SmartDevice so the "generate without ref id" call below
+            # has something real to bind to.
+            smart_device_document_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    DeviceDocument(
+                        id=uuid.UUID(smart_device_document_id),
+                        device_id=uuid.UUID(device_id),
+                        filename="smart_device.docx",
+                        storage_path="/tmp/smart_device.docx",
+                        file_size=1,
+                    )
+                )
+                await db.commit()
+
             smart = await client.post(
                 "/documents/generate",
-                json={"device_id": device_id},
+                json={
+                    "device_id": device_id,
+                    "device_document_id": smart_device_document_id,
+                },
             )
             assert smart.status_code == 202, smart.text
             assert "job_id" in smart.json()
@@ -510,7 +542,10 @@ async def _run_endpoint_tests():
 
             no_active = await client.post(
                 "/documents/generate",
-                json={"device_id": device_id},
+                json={
+                    "device_id": device_id,
+                    "device_document_id": smart_device_document_id,
+                },
             )
             assert no_active.status_code == 404, no_active.text
 
@@ -615,15 +650,34 @@ async def _run_endpoint_tests():
                 )
                 await db.commit()
 
+            hist_device_document_id = str(uuid.uuid4())
+            async with AsyncSessionLocal() as db:
+                db.add(
+                    DeviceDocument(
+                        id=uuid.UUID(hist_device_document_id),
+                        device_id=uuid.UUID(hist_device_id),
+                        filename="hist_device.docx",
+                        storage_path="/tmp/hist_device.docx",
+                        file_size=1,
+                    )
+                )
+                await db.commit()
+
             r1 = await client.post(
                 "/documents/generate",
-                json={"device_id": hist_device_id},
+                json={
+                    "device_id": hist_device_id,
+                    "device_document_id": hist_device_document_id,
+                },
             )
             assert r1.status_code == 202, r1.text
 
             r2 = await client.post(
                 "/documents/generate",
-                json={"device_id": hist_device_id},
+                json={
+                    "device_id": hist_device_id,
+                    "device_document_id": hist_device_document_id,
+                },
             )
             assert r2.status_code == 202, r2.text
 

@@ -60,7 +60,11 @@ export const referencesApi = {
 };
 
 export const documentsApi = {
-  generate: (payload: { device_id: string; reference_document_id?: string }) =>
+  generate: (payload: {
+    device_id: string;
+    reference_document_id?: string;
+    device_document_id: string;
+  }) =>
     api
       .post<{ job_id: string; status: string }>("/documents/generate", payload)
       .then((r) => r.data),

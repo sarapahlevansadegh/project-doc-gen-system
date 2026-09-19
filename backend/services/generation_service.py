@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 async def create_job(
-    db: AsyncSession, device_id: str, reference_doc_id: str
+    db: AsyncSession, device_id: str, reference_doc_id: str, device_document_id: str
 ) -> GeneratedDocument:
     max_version = await db.scalar(
         select(func.max(GeneratedDocument.version)).where(
@@ -45,6 +45,7 @@ async def create_job(
         id=uuid.uuid4(),
         device_id=uuid.UUID(device_id),
         reference_doc_id=uuid.UUID(reference_doc_id),
+        device_document_id=uuid.UUID(device_document_id),
         status="pending",
         progress_pct=0,
         version=next_version,
@@ -137,11 +138,14 @@ async def _run_workflow(
             db,
             device_id=job.device_id,
             reference_doc_id=job.reference_doc_id,
+            device_document_id=job.device_document_id,
             llm=llm,
             progress_callback=progress_callback,
         )
         job.result_sections = result["sections"]
         job.file_path = str(result["output_path"])
+        job.device_document_hash = result["device_document_hash"]
+        job.reference_doc_hash = result["reference_doc_hash"]
         logger.info(
             "Document generation completed: sections=%s file_path=%s",
             len(job.result_sections), job.file_path,

@@ -26,6 +26,14 @@ export default function Generate() {
     queryFn: () => devicesApi.list({ limit: 200 }),
   });
   const devices = devicesResponse?.items ?? [];
+  const selectedDevice = devices.find((d) => d.id === deviceId);
+  // Deterministic tie-break: newest created_at first, then id as fallback -
+  // no implicit "just pick one" ambiguity when timestamps collide.
+  const deviceDocuments = [...(selectedDevice?.documents ?? [])].sort((a, b) => {
+    const byDate = (b.created_at ?? "").localeCompare(a.created_at ?? "");
+    return byDate !== 0 ? byDate : b.id.localeCompare(a.id);
+  });
+  const selectedDeviceDocument = deviceDocuments[0];
 
   const { data: references = [], isLoading: referencesLoading } = useQuery({
     queryKey: ["references"],
@@ -89,11 +97,16 @@ export default function Generate() {
 
   const handleGenerate = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedDeviceDocument) {
+      setError("This device has no uploaded document to generate from.");
+      return;
+    }
     setError(null);
     setProgress(null);
     generateMutation.mutate({
       device_id: deviceId,
       reference_document_id: useActiveReference ? undefined : referenceId || undefined,
+      device_document_id: selectedDeviceDocument.id,
     });
   };
 
@@ -162,6 +175,16 @@ export default function Generate() {
                 {!devicesLoading && devices.length === 0 && (
                   <p className="mt-1 text-xs text-red-600">No devices available.</p>
                 )}
+                {deviceId && selectedDeviceDocument && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    Generating from: <span className="font-medium">{selectedDeviceDocument.filename}</span>
+                  </p>
+                )}
+                {deviceId && !selectedDeviceDocument && (
+                  <p className="mt-1 text-xs text-red-600">
+                    This device has no uploaded document to generate from.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -222,7 +245,10 @@ export default function Generate() {
               <button
                 type="submit"
                 disabled={
-                  generateMutation.isPending || !deviceId || (!useActiveReference && !referenceId)
+                  generateMutation.isPending ||
+                  !deviceId ||
+                  !selectedDeviceDocument ||
+                  (!useActiveReference && !referenceId)
                 }
                 className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
