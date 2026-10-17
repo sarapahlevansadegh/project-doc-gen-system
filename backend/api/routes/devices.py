@@ -6,13 +6,13 @@ import uuid
 from pathlib import Path
 
 from api.deps import get_current_active_user, get_db, require_role
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from models.device_document import DeviceDocumentSection
 from models.document_chunk import DocumentChunk
 from pydantic import BaseModel
 from rag.chunk_service import generate_and_store_chunks
-from schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
+from schemas.device import DeviceCreate, DeviceInputType, DeviceOut, DeviceUpdate
 from services import device_document_service, device_service
 from services.document_diff_planner import check_ontology_consistency
 from services.ontology_extraction_service import extract_and_store_ontology
@@ -157,6 +157,27 @@ async def upload_device_document(
     entry in the device list, named after the file.
     """
     return await device_document_service.upload_new_device_document(db, file)
+
+
+@devices_router.post(
+    "/{device_id}/documents", response_model=DeviceOut, status_code=201
+)
+async def attach_device_document(
+    device_id: uuid.UUID,
+    file: UploadFile = File(...),
+    input_type: DeviceInputType = Form(...),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "engineer")),
+):
+    """Attach a typed input file to an existing device.
+
+    The file type (concept, GUI input, driver input, hardware design,
+    other) is chosen by the engineer, not guessed. Several files of the
+    same type are allowed; nothing already attached is replaced.
+    """
+    return await device_document_service.attach_document_to_device(
+        db, device_id, file, input_type
+    )
 
 
 @devices_router.get(

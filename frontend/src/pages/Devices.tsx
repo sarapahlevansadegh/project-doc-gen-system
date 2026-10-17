@@ -10,7 +10,31 @@ import type {
   SerialCommand,
   DeviceDocument,
   DeviceDocumentSection,
+  DeviceInputType,
 } from "@/types";
+
+const INPUT_TYPE_LABELS: Record<DeviceInputType, string> = {
+  concept: "Concept",
+  gui_input: "GUI input",
+  driver_input: "Driver input",
+  hardware_design: "Hardware design",
+  other: "Other",
+};
+
+const STATUS_STYLES: Record<string, string> = {
+  parsed: "bg-green-50 text-green-700",
+  skipped: "bg-yellow-50 text-yellow-700",
+  failed: "bg-red-50 text-red-700",
+};
+
+/** Input types that appear on more than one file of the same device. */
+function duplicateInputTypes(documents: DeviceDocument[]): DeviceInputType[] {
+  const counts = new Map<DeviceInputType, number>();
+  for (const doc of documents) {
+    if (doc.input_type) counts.set(doc.input_type, (counts.get(doc.input_type) ?? 0) + 1);
+  }
+  return [...counts.entries()].filter(([, n]) => n > 1).map(([type]) => type);
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -101,6 +125,8 @@ export default function Devices() {
   const [search, setSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachDevice, setAttachDevice] = useState<Device | null>(null);
+  const [attachType, setAttachType] = useState<DeviceInputType>("concept");
   const limit = 20;
 
   const [sectionsDoc, setSectionsDoc] = useState<DeviceDocument | null>(null);
@@ -170,6 +196,22 @@ export default function Devices() {
       setUploadOpen(false);
     },
   });
+
+  const attachMutation = useMutation({
+    mutationFn: ({ deviceId, file, type }: { deviceId: string; file: File; type: DeviceInputType }) =>
+      devicesApi.attach(deviceId, file, type),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["devices"], exact: false });
+      setAttachDevice(null);
+    },
+  });
+
+  const handleAttachFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && attachDevice) {
+      attachMutation.mutate({ deviceId: attachDevice.id, file, type: attachType });
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -367,6 +409,11 @@ export default function Devices() {
                     <ul className="space-y-1">
                       {device.documents.map((doc) => (
                         <li key={doc.id} className="truncate" title={doc.filename}>
+                          {doc.input_type && (
+                            <span className="mr-1 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-700">
+                              {INPUT_TYPE_LABELS[doc.input_type]}
+                            </span>
+                          )}
                           {doc.filename}{" "}
                           <span className="text-xs text-gray-400">
                             ({formatFileSize(doc.file_size)})
@@ -377,6 +424,21 @@ export default function Devices() {
                           >
                             Sections
                           </button>
+                          {doc.processing_status && (
+                            <span
+                              className={`ml-2 rounded px-1.5 py-0.5 text-xs ${
+                                STATUS_STYLES[doc.processing_status] ?? "bg-gray-50 text-gray-600"
+                              }`}
+                              title={doc.processing_note ?? undefined}
+                            >
+                              {doc.processing_status}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                      {duplicateInputTypes(device.documents).map((type) => (
+                        <li key={`dup-${type}`} className="text-xs text-yellow-700">
+                          Warning: more than one "{INPUT_TYPE_LABELS[type]}" file attached.
                         </li>
                       ))}
                     </ul>
@@ -385,6 +447,16 @@ export default function Devices() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-right text-sm">
+                  <button
+                    onClick={() => {
+                      attachMutation.reset();
+                      setAttachType("concept");
+                      setAttachDevice(device);
+                    }}
+                    className="mr-3 text-blue-600 hover:text-blue-800"
+                  >
+                    Add input
+                  </button>
                   <button
                     onClick={() => openEdit(device)}
                     className="mr-3 text-blue-600 hover:text-blue-800"
@@ -761,6 +833,60 @@ export default function Devices() {
               )}
               {uploadMutation.isSuccess && (
                 <p className="text-sm text-green-600">Upload successful!</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Input File Modal */}
+      {attachDevice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900">
+                Add input file to {attachDevice.name}
+              </h2>
+              <button
+                onClick={() => setAttachDevice(null)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Input type</label>
+                <select
+                  value={attachType}
+                  onChange={(e) => setAttachType(e.target.value as DeviceInputType)}
+                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                >
+                  {(Object.keys(INPUT_TYPE_LABELS) as DeviceInputType[]).map((type) => (
+                    <option key={type} value={type}>
+                      {INPUT_TYPE_LABELS[type]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Select a file</label>
+                <input
+                  type="file"
+                  accept=".docx,.doc,.pdf"
+                  onChange={handleAttachFileChange}
+                  className="mt-1 block w-full text-sm text-gray-600 file:mr-4 file:rounded-md file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  .docx is parsed. .doc and .pdf are stored but need conversion to .docx.
+                </p>
+              </div>
+              {attachMutation.isPending && <p className="text-sm text-gray-500">Uploading...</p>}
+              {attachMutation.isError && (
+                <p className="text-sm text-red-600">
+                  {(attachMutation.error as { response?: { data?: { detail?: string } } })?.response
+                    ?.data?.detail || "Upload failed. Please try again."}
+                </p>
               )}
             </div>
           </div>

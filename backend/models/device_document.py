@@ -22,6 +22,13 @@ class DeviceDocument(Base):
     storage_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     content_type: Mapped[str] = mapped_column(String(255), nullable=True)
+    # Engineer-chosen role of this file for the device (see
+    # schemas.device.DeviceInputType). Null for files uploaded before
+    # migration 0013 or through the legacy "new device per file" upload.
+    input_type: Mapped[str] = mapped_column(String(30), nullable=True)
+    # Outcome of the structural parse: "parsed", "skipped" or "failed".
+    processing_status: Mapped[str] = mapped_column(String(30), nullable=True)
+    processing_note: Mapped[str] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     device: Mapped["Device"] = relationship(back_populates="documents")  # noqa: F821

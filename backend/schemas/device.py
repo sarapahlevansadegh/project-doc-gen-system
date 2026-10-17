@@ -19,6 +19,14 @@ class CommandDirection(str, Enum):
     MAIN_TO_PANEL = "main_to_panel"
 
 
+class DeviceInputType(str, Enum):
+    CONCEPT = "concept"
+    GUI_INPUT = "gui_input"
+    DRIVER_INPUT = "driver_input"
+    HARDWARE_DESIGN = "hardware_design"
+    OTHER = "other"
+
+
 class AlarmPriority(str, Enum):
     HIGH = "High"
     MEDIUM = "Medium"
@@ -134,6 +142,9 @@ class DeviceDocumentOut(BaseModel):
     filename: str
     file_size: int
     content_type: str | None
+    input_type: str | None = None
+    processing_status: str | None = None
+    processing_note: str | None = None
     created_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)

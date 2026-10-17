@@ -19,7 +19,7 @@ from fastapi import HTTPException, UploadFile
 from models.device import Device
 from models.device_document import DeviceDocument
 from rag.chunk_service import generate_and_store_chunks
-from schemas.device import DeviceCreate
+from schemas.device import DeviceCreate, DeviceInputType
 from services import device_document_parser, device_service
 from services.ontology_extraction_service import extract_and_store_ontology
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +55,20 @@ def _validate_extension(filename: str) -> None:
             status_code=400,
             detail=f"Unsupported file type. Allowed extensions: {allowed}",
         )
+
+
+def _record_processing_status(document: DeviceDocument, section_count: int) -> None:
+    """Set the structural-parse outcome on ``document`` (caller commits)."""
+    suffix = Path(document.storage_path).suffix.lower()
+    if suffix not in device_document_parser.PARSEABLE_EXTENSIONS:
+        document.processing_status = "skipped"
+        document.processing_note = "Needs conversion to .docx before it can be parsed"
+    elif section_count > 0:
+        document.processing_status = "parsed"
+        document.processing_note = None
+    else:
+        document.processing_status = "failed"
+        document.processing_note = "No sections could be extracted from this file"
 
 
 async def _save_upload_to_disk(file: UploadFile, dest: Path) -> int:
@@ -107,11 +121,43 @@ async def upload_new_device_document(
     return await device_service.get_device(db, str(device.id))
 
 
+async def attach_document_to_device(
+    db: AsyncSession,
+    device_id: uuid.UUID,
+    file: UploadFile,
+    input_type: DeviceInputType,
+) -> Device:
+    """Attach a typed input file to an already-existing device.
+
+    Unlike ``upload_new_device_document`` this never creates a device, so a
+    device can accumulate several inputs (concept, GUI input, driver input,
+    ...). Several files of the same type are allowed on purpose (e.g. two
+    revisions of one input): nothing is replaced or discarded here, and the
+    UI warns when a type appears more than once.
+    """
+    filename = file.filename or "Untitled"
+    _validate_extension(filename)
+
+    device = await device_service.get_device(db, str(device_id))
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    await _attach_document(
+        db,
+        device_id=device_id,
+        file=file,
+        filename=filename,
+        input_type=input_type.value,
+    )
+    return await device_service.get_device(db, str(device_id))
+
+
 async def _attach_document(
     db: AsyncSession,
     device_id: uuid.UUID,
     file: UploadFile,
     filename: str,
+    input_type: str | None = None,
 ) -> DeviceDocument:
     doc_id = uuid.uuid4()
     safe_filename = _sanitize_filename(filename)
@@ -126,6 +172,7 @@ async def _attach_document(
         storage_path=str(dest),
         file_size=file_size,
         content_type=file.content_type,
+        input_type=input_type,
     )
     db.add(document)
     await db.commit()
@@ -137,6 +184,8 @@ async def _attach_document(
     section_count = await device_document_parser.parse_and_store_sections(
         db, document_id=document.id, storage_path=document.storage_path
     )
+    _record_processing_status(document, section_count)
+    await db.commit()
 
     # Phase 3 + 3.5, now run inline on upload rather than as separate manual
     # steps: chunk+embed the extracted sections, then extract ontology

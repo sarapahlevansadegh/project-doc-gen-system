@@ -24,12 +24,22 @@ export interface SerialCommand {
   command_order?: number;
 }
 
+export type DeviceInputType =
+  | "concept"
+  | "gui_input"
+  | "driver_input"
+  | "hardware_design"
+  | "other";
+
 export interface DeviceDocument {
   id: string;
   device_id: string;
   filename: string;
   file_size: number;
   content_type?: string;
+  input_type?: DeviceInputType | null;
+  processing_status?: "parsed" | "skipped" | "failed" | null;
+  processing_note?: string | null;
   created_at?: string;
 }
 

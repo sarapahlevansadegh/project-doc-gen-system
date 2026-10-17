@@ -5,6 +5,7 @@ import type {
   DeviceUpdate,
   DeviceListResponse,
   DeviceDocumentSection,
+  DeviceInputType,
   ReferenceDocument,
   ReferenceSection,
   DocumentHistoryItem,
@@ -23,6 +24,16 @@ export const devicesApi = {
     form.append("file", file);
     return api
       .post<Device>("/devices/documents", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  attach: (deviceId: string, file: File, inputType: DeviceInputType) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("input_type", inputType);
+    return api
+      .post<Device>(`/devices/${deviceId}/documents`, form, {
         headers: { "Content-Type": "multipart/form-data" },
       })
       .then((r) => r.data);
