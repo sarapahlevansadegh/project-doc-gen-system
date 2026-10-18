@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -36,13 +37,63 @@ from docx.text.paragraph import Paragraph
 from models.device_document import DeviceDocument
 from models.template import ReferenceDocument
 from rag.embeddings import embed_text
-from rag.extractor import LiveSection, extract_docx_live
+from rag.extractor import LiveSection, _iter_block_items, extract_docx_live
 from services.device_document_service import _sanitize_filename
 from services.document_diff_planner import build_section_plan
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+# Debugging aid for the paragraph-duplication investigation (read-only
+# instrumentation - no behavior change). Off by default: only short
+# previews are logged. Set DOCGEN_DEBUG_DUPLICATION_LOG=1 to log full
+# paragraph text, per the requirement that full document text is only
+# captured in a controlled debug run, never by default.
+_DEBUG_FULL_TEXT = os.environ.get("DOCGEN_DEBUG_DUPLICATION_LOG") == "1"
+
+
+def _block_xml_key(block: Paragraph | Table) -> int:
+    """Stable-within-one-run identity for a python-docx block, keyed off
+    the underlying XML element rather than the wrapper object's id() -
+    python-docx creates a fresh Paragraph/Table wrapper on every access,
+    so two separate traversals never share wrapper identity even though
+    they refer to the same document position. This key is only ever used
+    as an in-process lookup; logged locators are the stable integer
+    positions in ``block_locator`` below, not this key itself."""
+    return id(block._p) if isinstance(block, Paragraph) else id(block._tbl)
+
+
+def _build_block_locator(document) -> dict[int, int]:
+    """Maps each block's _block_xml_key() to its stable, reproducible
+    position among all top-level blocks in the document (paragraphs and
+    tables, in document order). Computed once per run and threaded
+    through for logging only - never persisted, never affects which
+    paragraph/cell actually gets written."""
+    return {
+        _block_xml_key(block): index
+        for index, block in enumerate(_iter_block_items(document))
+    }
+
+
+def _code_version() -> str:
+    """Best-effort git commit SHA of the code currently running, so a log
+    line can be compared against a previous run's log to tell whether the
+    generation logic itself changed between them. Falls back to
+    "unknown" rather than failing - git may not be installed/available in
+    the running container."""
+    try:
+        import subprocess
+
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, timeout=2
+            )
+            .decode()
+            .strip()
+        )
+    except Exception:
+        return "unknown"
 
 ProgressCallback = Callable[[dict], Awaitable[None]]
 
@@ -73,7 +124,14 @@ class _SyntheticSection:
         self.embedding = embedding
 
 
-def _apply_paragraphs(paragraphs: list[Paragraph], new_texts: list[str]) -> None:
+def _apply_paragraphs(
+    paragraphs: list[Paragraph],
+    new_texts: list[str],
+    *,
+    run_id: str | None = None,
+    section_heading: str | None = None,
+    locator: dict[int, int] | None = None,
+) -> None:
     """Replace paragraph text in place, one new_texts entry per existing
     paragraph, in order.
 
@@ -83,11 +141,40 @@ def _apply_paragraphs(paragraphs: list[Paragraph], new_texts: list[str]) -> None
     rather than blanked out - losing reference wording outright would be
     worse than one paragraph occasionally not receiving an update.
     """
+    if run_id is not None:
+        # Duplication-investigation logging (read-only instrumentation):
+        # the target list this call is about to zip new_texts against,
+        # with each target's stable document-position locator, so a run's
+        # log can be checked for offset/misalignment after the fact.
+        for i, p in enumerate(paragraphs):
+            gidx = locator.get(_block_xml_key(p), -1) if locator else -1
+            preview = p.text if _DEBUG_FULL_TEXT else f"{p.text[:40]!r} ({len(p.text)} chars)"
+            logger.info(
+                "run=%s section=%r apply_target[%d] block=%d empty=%s text=%s",
+                run_id, section_heading, i, gidx, not p.text.strip(), preview,
+            )
+        logger.info(
+            "run=%s section=%r apply_paragraphs: targets=%d new_texts=%d",
+            run_id, section_heading, len(paragraphs), len(new_texts),
+        )
+
     n = min(len(paragraphs), len(new_texts))
     for i in range(n):
+        if run_id is not None:
+            gidx = locator.get(_block_xml_key(paragraphs[i]), -1) if locator else -1
+            new_preview = new_texts[i] if _DEBUG_FULL_TEXT else f"{new_texts[i][:40]!r} ({len(new_texts[i])} chars)"
+            logger.info(
+                "run=%s section=%r overwrite block=%d (target_idx=%d) <- new_texts[%d]=%s",
+                run_id, section_heading, gidx, i, i, new_preview,
+            )
         paragraphs[i].text = new_texts[i]
     if len(new_texts) > len(paragraphs) and paragraphs:
         extra = " ".join(new_texts[len(paragraphs):])
+        if run_id is not None:
+            logger.info(
+                "run=%s section=%r extra new_texts[%d:%d] (%d items) appended onto last target",
+                run_id, section_heading, len(paragraphs), len(new_texts), len(new_texts) - len(paragraphs),
+            )
         paragraphs[-1].text = f"{paragraphs[-1].text} {extra}".strip()
 
 
@@ -140,6 +227,9 @@ async def _plan_and_apply_section(
     section: LiveSection,
     device_document_id: uuid.UUID,
     llm: LLMClient,
+    *,
+    run_id: str | None = None,
+    locator: dict[int, int] | None = None,
 ) -> tuple[bool, str]:
     """Re-plan one LiveSection from its full text and apply the result
     directly onto its live paragraph/table objects. Returns (changed, reason).
@@ -150,7 +240,9 @@ async def _plan_and_apply_section(
 
     embedding = await embed_text(section_text)
     synthetic = _SyntheticSection(section.title, section_text, embedding)
-    plan = await build_section_plan(db, synthetic, device_document_id, llm)
+    plan = await build_section_plan(
+        db, synthetic, device_document_id, llm, run_id=run_id
+    )
 
     if not plan.changed:
         return False, plan.reason
@@ -158,8 +250,36 @@ async def _plan_and_apply_section(
     paragraphs = [b for b in section.blocks if isinstance(b, Paragraph)]
     tables = [b for b in section.blocks if isinstance(b, Table)]
 
-    if plan.new_paragraphs and paragraphs:
-        _apply_paragraphs(paragraphs, plan.new_paragraphs)
+    if run_id is not None:
+        logger.info(
+            "run=%s section=%r plan.new_paragraphs=%s plan.new_table_markdown=%s "
+            "true_paragraph_targets=%d true_table_targets=%d",
+            run_id, section.heading_path,
+            len(plan.new_paragraphs) if plan.new_paragraphs else None,
+            "present" if plan.new_table_markdown else None,
+            len(paragraphs), len(tables),
+        )
+
+    reason = plan.reason
+    # One new text per existing paragraph, in order: a different count means
+    # the model's paragraphs don't line up with this section, and zipping
+    # them anyway would overwrite the wrong paragraphs or merge text onto
+    # the last one. Leave the paragraphs as they are and flag the section.
+    paragraph_mismatch = bool(
+        plan.new_paragraphs and paragraphs and len(plan.new_paragraphs) != len(paragraphs)
+    )
+    if paragraph_mismatch:
+        reason += (
+            f" [needs_review - the model returned {len(plan.new_paragraphs)} "
+            f"paragraph(s) for a section with {len(paragraphs)}; paragraphs "
+            "left unchanged]"
+        )
+    elif plan.new_paragraphs and paragraphs:
+        _apply_paragraphs(
+            paragraphs, plan.new_paragraphs,
+            run_id=run_id, section_heading=section.heading_path, locator=locator,
+        )
+    tables_applied = False
     if plan.new_table_markdown and tables:
         # A section rarely has more than one table; if it does, the same
         # replacement markdown is applied to each - build_section_plan's
@@ -168,8 +288,11 @@ async def _plan_and_apply_section(
         # shape can address per-table anyway.
         for table in tables:
             _apply_table(table, plan.new_table_markdown)
+        tables_applied = True
 
-    return True, plan.reason
+    if paragraph_mismatch and not tables_applied:
+        return False, reason
+    return True, reason
 
 
 async def generate_final_document(
@@ -192,6 +315,20 @@ async def generate_final_document(
 
     document, live_sections = extract_docx_live(reference_doc.storage_path)
 
+    # Duplication-investigation instrumentation (read-only: logging only,
+    # no behavior change). run_id correlates every log line from this one
+    # execution; enable with DOCGEN_DEBUG_DUPLICATION_LOG=1 for full text.
+    run_id = uuid.uuid4().hex[:10]
+    locator = _build_block_locator(document)
+    logger.info(
+        "run=%s START code_version=%s reference_doc_id=%s reference_hash=%s "
+        "device_document_id=%s llm_provider=%s llm_model=%s sections=%d "
+        "debug_full_text=%s",
+        run_id, _code_version(), reference_doc.id,
+        _sha256_file(reference_doc.storage_path), device_document_id,
+        llm.provider, llm.model, len(live_sections), _DEBUG_FULL_TEXT,
+    )
+
     sections_result: dict[str, str] = {}
     total = len(live_sections) or 1
     for index, section in enumerate(live_sections):
@@ -206,7 +343,7 @@ async def generate_final_document(
             )
 
         changed, reason = await _plan_and_apply_section(
-            db, section, device_document_id, llm
+            db, section, device_document_id, llm, run_id=run_id, locator=locator
         )
         sections_result[section.heading_path] = reason
 
@@ -227,6 +364,7 @@ async def generate_final_document(
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_base = _sanitize_filename(reference_doc.template_name) or "document"
     output_path = output_dir / f"{safe_base}_generated_{uuid.uuid4().hex[:8]}.docx"
+    logger.info("run=%s END output_path=%s", run_id, output_path)
     document.save(str(output_path))
     logger.info(
         "Generated final document %s (%d sections evaluated)",

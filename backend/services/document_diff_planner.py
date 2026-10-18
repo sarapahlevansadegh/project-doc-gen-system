@@ -17,6 +17,8 @@ guessed at.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -28,6 +30,13 @@ from models.template import DocumentTemplate
 from rag.reference_bge_embedding import find_matching_device_chunks_by_embedding
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+# See services/document_generator.py's matching flag - kept in sync so one
+# env var controls full-text debug logging across both modules for a
+# single investigation run.
+_DEBUG_FULL_TEXT = os.environ.get("DOCGEN_DEBUG_DUPLICATION_LOG") == "1"
 
 # Below this cosine similarity, treat the top match as "not actually about
 # this section" and leave the section unchanged rather than let the LLM
@@ -70,6 +79,9 @@ class SectionPlan:
     new_paragraphs: list[str] | None = None
     new_table_markdown: str | None = None
     best_similarity: float | None = None
+    # True when the LLM's output could not be trusted (wrong shape/types)
+    # and the section was therefore left unchanged for a human to look at.
+    needs_review: bool = False
 
 
 @dataclass
@@ -284,6 +296,43 @@ _SHORT_SECTION_SIMILARITY_THRESHOLD = 0.75  # stricter than DEFAULT_SIMILARITY_T
 _MAX_REPLACEMENT_LENGTH_RATIO = 3  # replacement text vs reference text
 
 
+def _plan_shape_problems(parsed: object) -> list[str]:
+    """Return what is wrong with the LLM's parsed JSON, or [] if its shape
+    is usable.
+
+    The checks are on type, not truthiness: ``0``, ``""``, ``False`` and
+    ``{}`` are falsy but are still the wrong shape for these fields, and a
+    plain ``if value:`` test would let them through unnoticed. The string
+    ``"false"`` for ``changed`` is the same trap in reverse (truthy but not
+    a boolean). ``None`` always means "not provided" and is allowed.
+    """
+    if not isinstance(parsed, dict):
+        return ["response is not a JSON object"]
+
+    problems: list[str] = []
+
+    changed = parsed.get("changed")
+    if changed is not None and not isinstance(changed, bool):
+        problems.append("changed is not a boolean")
+
+    reason = parsed.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        problems.append("reason is not a string")
+
+    new_paragraphs = parsed.get("new_paragraphs")
+    if new_paragraphs is not None:
+        if not isinstance(new_paragraphs, list):
+            problems.append("new_paragraphs is not a list")
+        elif not all(isinstance(p, str) for p in new_paragraphs):
+            problems.append("new_paragraphs contains a non-string item")
+
+    new_table_markdown = parsed.get("new_table_markdown")
+    if new_table_markdown is not None and not isinstance(new_table_markdown, str):
+        problems.append("new_table_markdown is not a string")
+
+    return problems
+
+
 async def build_section_plan(
     db: AsyncSession,
     section: DocumentTemplate,
@@ -291,6 +340,8 @@ async def build_section_plan(
     llm: LLMClient,
     k: int = 5,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    *,
+    run_id: str | None = None,
 ) -> SectionPlan:
     """`section` only needs `.id`, `.section_name`, `.content`, and
     `.embedding` populated - it doesn't have to be a persisted
@@ -351,8 +402,35 @@ async def build_section_plan(
             best_similarity=best_similarity,
         )
 
-    reason = parsed.get("reason", "")
+    problems = _plan_shape_problems(parsed)
+    if problems:
+        return SectionPlan(
+            section_id=section.id,
+            section_name=section.section_name,
+            changed=False,
+            reason=(
+                "[needs_review - the model's output had an invalid shape ("
+                + "; ".join(problems)
+                + "), so this section was left unchanged]"
+            ),
+            best_similarity=best_similarity,
+            needs_review=True,
+        )
+
+    reason = parsed.get("reason") or ""
     new_paragraphs = parsed.get("new_paragraphs")
+    if run_id is not None:
+        ref_line_count = len(section.content.splitlines())
+        logger.info(
+            "run=%s section=%r RAW new_paragraphs count=%s ref_content_lines=%d "
+            "ref_content_len=%d",
+            run_id, section.section_name,
+            len(new_paragraphs) if new_paragraphs is not None else None,
+            ref_line_count, len(section.content),
+        )
+        if _DEBUG_FULL_TEXT and new_paragraphs:
+            for i, p in enumerate(new_paragraphs):
+                logger.info("run=%s section=%r RAW new_paragraphs[%d]=%r", run_id, section.section_name, i, p)
     if new_paragraphs:
         new_len = sum(len(p) for p in new_paragraphs)
         ref_len = len(section.content)
@@ -370,6 +448,12 @@ async def build_section_plan(
                 "than an in-place value swap]"
             )
             new_paragraphs = None
+    if run_id is not None:
+        logger.info(
+            "run=%s section=%r POST-VALIDATION new_paragraphs count=%s",
+            run_id, section.section_name,
+            len(new_paragraphs) if new_paragraphs is not None else None,
+        )
 
     new_table_markdown = parsed.get("new_table_markdown")
     if new_table_markdown:
