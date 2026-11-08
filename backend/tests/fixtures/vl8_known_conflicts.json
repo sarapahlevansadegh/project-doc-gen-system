@@ -1,0 +1,98 @@
+{
+  "device": "High Power Laser VL8",
+  "description": "Conflicts between the three VL8 input documents (concept, GUI input, driver input), found by manual review. Same format as 760a_known_conflicts.json. input_type values: concept = Concept_Document_Sport_laser (code 15802), gui_input = Input-GUI_VL8 (code 15799), driver_input = Input-Driver_VL8 (code 15803). A decision block is present only where the engineer has confirmed the value.",
+  "conflicts": [
+    {
+      "id": "over_temperature_limit",
+      "title": "Laser module over-temperature limit",
+      "key_keywords": ["temperature"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)35(?!\\d)", "quote": "Laser module over temperature (35\u00ba)."},
+        {"input_type": "driver_input", "token_regex": "(?<!\\d)45(?!\\d)", "quote": "Laser module over temperature. 45\u00ba"}
+      ],
+      "decision": {"value": "45", "status": "confirmed_by_engineer"},
+      "notes": "The engineer confirmed 45 degrees."
+    },
+    {
+      "id": "duty_cycle_range",
+      "title": "Duty cycle range",
+      "key_keywords": ["duty"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)5\\s*%\\s*to\\s*100\\s*%", "quote": "Duty Cycle: it should be possible to adjust it from 5% to 100% in 5% increments"},
+        {"input_type": "driver_input", "token_regex": "(?<!\\d)1\\s*-\\s*95(?!\\d)", "quote": "Duty Cycle (%) | 1-95 | 1%"}
+      ],
+      "notes": "Concept_Document_Sport_laser says Duty Cycle 0-100 %. Three different ranges in three documents."
+    },
+    {
+      "id": "frequency_max",
+      "title": "Maximum frequency",
+      "key_keywords": ["frequency"],
+      "sources": [
+        {"input_type": "concept", "token_regex": "(?<!\\d)100\\s*KHz", "quote": "Frequency: 1Hz to 100KHz"},
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)1\\s*KHz", "quote": "Frequency: It should be possible to select the Frequency from 1 Hz to 1 KHz"}
+      ],
+      "notes": "Input-Driver_VL8 also says 1-1K Hz, so the concept document is the odd one out."
+    },
+    {
+      "id": "area_range",
+      "title": "Treatment area range",
+      "key_keywords": ["area"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)225\\s*cm", "quote": "Area: Ranges from 1 cm2 to 225 cm2"},
+        {"input_type": "driver_input", "token_regex": "(?<!\\d)1\\s*-\\s*100\\s*cm", "quote": "Area (cm2) | 1-100 cm2"}
+      ],
+      "notes": "Concept_Document_Sport_laser gives Area as Width x Length with no number."
+    },
+    {
+      "id": "dose_range",
+      "title": "Dose range",
+      "key_keywords": ["dose"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)100\\s*j/cm", "quote": "Dose: It ranges from 1 j/cm2 to 100j/cm2"},
+        {"input_type": "driver_input", "token_regex": "(?<!\\d)1\\s*-\\s*255(?!\\d)", "quote": "Dose (J/cm2) | 1-255"}
+      ],
+      "notes": "Concept_Document_Sport_laser says Dose up to 100J/cm2."
+    },
+    {
+      "id": "low_battery_threshold",
+      "title": "Low battery threshold",
+      "key_keywords": ["battery"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "below\\s*20\\s*%", "quote": "The battery charge drops below 20%"},
+        {"input_type": "driver_input", "token_regex": "(?<!\\d)15\\s*%", "quote": "Low Battery. 15% of the maximum capacity"}
+      ],
+      "notes": ""
+    },
+    {
+      "id": "handswitch_vs_footswitch",
+      "title": "Handswitch or footswitch",
+      "key_keywords": ["switch"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "\\bhandswitch\\b", "quote": "The Handswitch is not connected."},
+        {"input_type": "driver_input", "token_regex": "\\bfootswitch\\b", "quote": "The footswitch is not connected."}
+      ],
+      "notes": "Concept_Document_Sport_laser also says footswitch."
+    },
+    {
+      "id": "number_of_modes",
+      "title": "Number of therapy modes",
+      "key_keywords": ["mode"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "\\bfive\\s+modes\\b", "quote": "Five modes shall be available for selection"},
+        {"input_type": "driver_input", "token_regex": "Continuous\\s*,\\s*Pulsed", "quote": "Emission Mode: Continuous, Pulsed"}
+      ],
+      "decision": {"value": "two modes (Continuous, Pulsed)", "status": "confirmed_by_engineer"},
+      "notes": "Concept_Document_Sport_laser lists four: Continuous, Pulsed, Burst, Single. The GUI input says five but names only two. The engineer confirmed two."
+    },
+    {
+      "id": "guide_light_650_power",
+      "title": "Power of the 650 nm guide light",
+      "key_keywords": ["650"],
+      "sources": [
+        {"input_type": "concept", "token_regex": "(?<!\\d)50\\s*mW", "quote": "a guidlight of 650 nm with the power of< 50 mW"},
+        {"input_type": "driver_input", "token_regex": "(?<!\\d)0\\.2\\s*W", "quote": "0.2W for 650nm"}
+      ],
+      "notes": "50 mW against 0.2 W (200 mW)."
+    }
+  ]
+}

@@ -14,6 +14,10 @@ change, without re-uploading). LLM-call-heavy - one call per chunk for
 entities, plus one more for relationships - so a slow or failing
 extraction must not take the whole upload down with it; see the
 fail-soft/best-effort handling in _attach_document.
+
+Table rows and plain "name: value" lines are read first by
+ontology/table_extractor.py (rules, no LLM, same result every run); the LLM
+pass afterwards only adds what the rules do not cover.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from models.device_document import DeviceDocument
 from models.document_chunk import DocumentChunk
 from models.ontology import OntologyEntity, OntologyRelationship
 from ontology.extractor import extract_entities, extract_relationships
+from ontology.table_extractor import extract_rule_based_entities
 from ontology.validator import Entity
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -112,8 +117,27 @@ async def extract_and_store_ontology(
 
     entities_upserted = 0
     relationships_upserted = 0
+    # Header row of the last table seen in this document: long tables are split
+    # across chunks and the later chunks carry no header row of their own.
+    table_header: list[str] | None = None
 
     for chunk in chunks:
+        # Rule-based pass first: table rows and "name: value" lines, no LLM.
+        try:
+            rule_entities, table_header = extract_rule_based_entities(
+                chunk.chunk_text, table_header
+            )
+        except Exception:
+            logger.exception(
+                "Rule-based extraction failed for chunk_id=%s, continuing with the LLM pass",
+                chunk.id,
+            )
+            rule_entities = []
+
+        for entity in rule_entities:
+            await _get_or_create_entity(db, document.device_id, entity, chunk.id)
+            entities_upserted += 1
+
         try:
             chunk_entities = await asyncio.to_thread(
                 extract_entities, chunk.chunk_text, llm
@@ -170,7 +194,6 @@ async def extract_and_store_ontology(
             relationships_upserted += 1
 
     await db.commit()
-
     return OntologyExtractionResult(
         document_id=document_id,
         device_id=document.device_id,

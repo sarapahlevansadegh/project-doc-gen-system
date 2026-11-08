@@ -1,0 +1,46 @@
+{
+  "device": "Biofeedback 760A",
+  "description": "Conflicts between the three 760A input documents (concept, GUI input, electronic design), found by manual review. Same format as vl8_known_conflicts.json. No engineer decisions are recorded yet. input_type values: concept = Concept_Document_760G-V04, gui_input = GUI_Input_760G-V04, hardware_design = Input-Electronic_Design_760A.",
+  "conflicts": [
+    {
+      "id": "work_time_range",
+      "title": "Work time range",
+      "key_keywords": ["work"],
+      "sources": [
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)1\\s*-\\s*20\\s*s", "quote": "Work Time: 1-20s"},
+        {"input_type": "concept", "token_regex": "(?<!\\d)2\\s*-\\s*99\\s*s", "quote": "Work / Rest periods: 2-99 seconds"}
+      ],
+      "notes": "Input-Electronic_Design_760A also says 2-99 seconds. Software_Requirements_760A says 1-30s."
+    },
+    {
+      "id": "release_threshold_range",
+      "title": "Release threshold range",
+      "key_keywords": ["release"],
+      "sources": [
+        {"input_type": "concept", "token_regex": "(?<!\\d)1\\s*-\\s*10\\s*(u|\u03bc|\u00b5)v", "quote": "Release Threshold: 1-10\u03bcv(0.1 \u03bcv)"},
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)0\\s*-\\s*10\\s*(u|\u03bc|\u00b5)v", "quote": "Release EMG Threshold: 0-10uv"}
+      ],
+      "notes": "A second table in GUI_Input_760G-V04 says Release Threshold 0-20uv with step 1uv."
+    },
+    {
+      "id": "contraction_threshold_floor",
+      "title": "Contraction threshold range",
+      "key_keywords": ["threshold"],
+      "sources": [
+        {"input_type": "hardware_design", "token_regex": "(?<!\\d)3\\s*(u|\u03bc|\u00b5)v\\s*-\\s*2000", "quote": "Threshold: 3\u03bcv-2000\u03bcv"},
+        {"input_type": "gui_input", "token_regex": "(?<!\\d)0\\s*-\\s*2000\\s*(u|\u03bc|\u00b5)v", "quote": "EMG Threshold: 0-2000uv"}
+      ],
+      "notes": "Concept_Document_760G-V04 also says 3-2000 (spelled Threshould)."
+    },
+    {
+      "id": "filter_name",
+      "title": "Name of the wide EMG filter",
+      "key_keywords": [],
+      "sources": [
+        {"input_type": "concept", "token_regex": "\\bwide\\b", "quote": "a. Wide: 18 Hz +/- 4 Hz to 370 Hz +/- 10%"},
+        {"input_type": "gui_input", "token_regex": "\\bwidth\\b", "quote": "Filter: Width"}
+      ],
+      "notes": "Input-Electronic_Design_760A also writes Width. Probably a spelling slip; the engineer should confirm."
+    }
+  ]
+}
