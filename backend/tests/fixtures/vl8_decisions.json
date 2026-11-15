@@ -1,0 +1,15 @@
+{
+  "device": "VL8",
+  "note": "Engineer decisions given by Sara on 2026-11-01 (and earlier confirmations). One value per parameter.",
+  "decisions": {
+    "laser_module_over_temperature_limit": "45 degrees Celsius",
+    "number_of_therapy_modes": "two: continuous and pulsed",
+    "wavelength_650_nm_emission": "650 nm is the aiming light and emits in continuous mode only",
+    "wavelength_808_1064_nm_emission": "808 nm and 1064 nm work in both pulsed and continuous mode",
+    "low_battery_warning_threshold": "15 percent of battery capacity",
+    "output_switch": "handswitch, not footswitch",
+    "duty_cycle_range": "5 to 100 percent in steps of 5 percent",
+    "power_650_nm": "0 to 200 mW in steps of 10 mW",
+    "power_808_and_1064_nm": "0 to 8000 mW in steps of 100 mW"
+  }
+}
