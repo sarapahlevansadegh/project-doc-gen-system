@@ -12,10 +12,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # --- LLM API keys ---
     anthropic_api_key: str = ""
+    # Optional Anthropic-compatible gateway (e.g. https://coarena.ai/api).
+    # Do not include /v1: the SDK appends /v1/messages itself.
+    anthropic_base_url: str = ""
+    # Bearer token for the gateway. When set, it is used instead of api_key.
+    anthropic_auth_token: str = ""
     groq_api_key: str = ""
     openai_api_key: str = ""
     openrouter_api_key: str = ""
     gemini_api_key:str = ""
+
+    iteracompute_api_key: str = ""
+    iteracompute_base_url: str ="https://api.iteracompute.com/v1"
+    iteracompute_model: str ="Qwen3.8-27B"
 
     # --- Database ---
     db_password: str = "docgen_pass_123"

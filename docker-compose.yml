@@ -40,7 +40,11 @@ services:
       - TOKENIZERS_PARALLELISM=false
 
       # Database
-      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://docgen:docgen_pass_123@db:5432/docgen}
+      # Fixed on purpose: inside the container the host is "db" and the port
+      # is 5432. It must not come from ${DATABASE_URL}, because a localhost:5433
+      # value (used for scripts run outside Docker) set in .env or in the
+      # PowerShell session would otherwise leak in and crash the backend.
+      - DATABASE_URL=postgresql+asyncpg://docgen:${DB_PASSWORD:-docgen_pass_123}@db:5432/docgen
       - DB_PASSWORD=${DB_PASSWORD:-docgen_pass_123}
 
 
@@ -55,6 +59,9 @@ services:
 
       # Other Providers
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Anthropic-compatible gateway (e.g. https://coarena.ai/api, without /v1)
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}

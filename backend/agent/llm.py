@@ -8,8 +8,12 @@ Supports multiple providers selected via environment:
 - ollama
 - openrouter
 - gemini
+- iteracompute
 
 API keys/URLs are loaded from environment settings.
+
+The anthropic provider can also talk to an Anthropic-compatible gateway:
+set ANTHROPIC_BASE_URL (without /v1) and ANTHROPIC_AUTH_TOKEN.
 """
 
 from __future__ import annotations
@@ -30,6 +34,9 @@ OPENAI = "openai"
 OLLAMA = "ollama"
 OPENROUTER = "openrouter"
 GEMINI = "gemini"
+ITERACOMPUTE = "iteracompute"
+
+_ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
 _USER_AGENT = (
@@ -75,6 +82,31 @@ def _http_client():
 
     except ImportError:
         return None
+
+
+def _anthropic_text(response: Any) -> str:
+    """Join all text blocks of an Anthropic response.
+
+    The response content is a list of blocks (text, thinking, ...).
+    Blocks without text are skipped. An empty result is an error, so it
+    never silently flows into document generation.
+    """
+
+    parts = [
+        block.text
+        for block in (response.content or [])
+        if isinstance(getattr(block, "text", None), str)
+    ]
+
+    text = "".join(parts).strip()
+
+    if not text:
+        raise RuntimeError(
+            "Anthropic response contained no text "
+            f"(stop_reason={getattr(response, 'stop_reason', None)})"
+        )
+
+    return text
 
 
 class LLMClient:
@@ -130,6 +162,16 @@ class LLMClient:
                 "DOCGEN_ANTHROPIC_MODEL",
                 "claude-3-5-sonnet-20241022",
             ),
+
+            ITERACOMPUTE: (
+               
+               "ITERACOMPUTE_MODEL",
+               "qwen/qwen3.8-27b",
+
+),
+
+
+
         }
 
 
@@ -213,15 +255,41 @@ class LLMClient:
                 http_client=http_client,
             )
 
+        elif self.provider == ITERACOMPUTE:
+
+              from openai import OpenAI
+
+              self._client = OpenAI(
+                 base_url=settings.iteracompute_base_url,
+                 api_key=settings.iteracompute_api_key,
+                 http_client=http_client,
+    )
+
+
 
         elif self.provider == ANTHROPIC:
 
             from anthropic import Anthropic
 
-            self._client = Anthropic(
-                api_key=settings.anthropic_api_key,
-                http_client=http_client,
-            )
+            kwargs: dict[str, Any] = {
+                "http_client": http_client,
+                # Always explicit: the SDK would otherwise read
+                # ANTHROPIC_BASE_URL from the environment, and an
+                # empty value there would break the URL.
+                "base_url": (
+                    settings.anthropic_base_url
+                    or _ANTHROPIC_DEFAULT_BASE_URL
+                ),
+            }
+
+            if settings.anthropic_auth_token:
+                # Gateway mode: Authorization: Bearer <token>
+                kwargs["auth_token"] = settings.anthropic_auth_token
+            else:
+                # Direct Anthropic API: x-api-key header
+                kwargs["api_key"] = settings.anthropic_api_key
+
+            self._client = Anthropic(**kwargs)
 
 
         else:
@@ -259,6 +327,7 @@ class LLMClient:
             OLLAMA,
             OPENROUTER,
             GEMINI,
+            ITERACOMPUTE,
         }
 
 
@@ -299,7 +368,7 @@ class LLMClient:
         )
 
 
-        return response.content[0].text.strip()
+        return _anthropic_text(response)
 
 
 
